@@ -1,7 +1,7 @@
 import discord
-from discord.ext import tasks, commands
+from discord.ext import commands, tasks
 from discord import Intents
-import json, os, datetime, pytz, asyncio, random
+import asyncio, json, os, datetime, pytz, random
 from aiohttp import web
 
 # -----------------------------
@@ -29,9 +29,7 @@ PAINEL_FILE = os.path.join(DATA_DIR, "painel.json")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# -----------------------------
-# CRIAÇÃO AUTOMÁTICA DE JSONS
-# -----------------------------
+# Cria arquivos caso não existam
 json_defaults = {
     RANKING_FILE: {"scores": {}, "__last_reset": ""},
     TORNEIO_FILE: {
@@ -58,18 +56,12 @@ for file_path, default_content in json_defaults.items():
             json.dump(default_content, f, indent=4)
 
 # -----------------------------
-# FUNÇÕES DE JSON
+# FUNÇÕES AUXILIARES
 # -----------------------------
 def load_json(file, default):
     try:
         with open(file, "r") as f:
             data = json.load(f)
-            if isinstance(default, dict) and isinstance(data, dict):
-                for k, v in default.items():
-                    if k not in data:
-                        data[k] = v
-            elif type(data) != type(default):
-                return default
             return data
     except:
         return default
@@ -78,9 +70,6 @@ def save_json(file, data):
     with open(file, "w") as f:
         json.dump(data, f, indent=4)
 
-# -----------------------------
-# ESTADOS
-# -----------------------------
 fila = []
 partidas_ativas = {}
 ranking = load_json(RANKING_FILE, {"scores": {}, "__last_reset": ""})
@@ -103,7 +92,7 @@ panel_data = load_json(PAINEL_FILE, {"message_id": 0})
 PANEL_MESSAGE_ID = panel_data.get("message_id", 0)
 
 # -----------------------------
-# FUNÇÕES AUXILIARES
+# FUNÇÕES DE RANKING E HISTÓRICO
 # -----------------------------
 def gerar_ranking_texto():
     txt = ""
@@ -135,9 +124,7 @@ def registrar_partida(u1, u2, vencedor_id):
     save_json(HIST_FILE, historico)
 
 def salvar_ranking(uid, pontos=1):
-    if "scores" not in ranking:
-        ranking["scores"] = {}
-    ranking["scores"][str(uid)] = ranking["scores"].get(str(uid), 0) + pontos
+    ranking["scores"][str(uid)] = ranking.get("scores", {}).get(str(uid), 0) + pontos
     save_json(RANKING_FILE, ranking)
 
 def gerar_fila_texto():
@@ -203,9 +190,6 @@ async def atualizar_painel():
     await painel_msg.edit(content=content)
     await adicionar_reacoes_painel()
 
-# -----------------------------
-# REAÇÕES INTERATIVAS
-# -----------------------------
 async def adicionar_reacoes_painel():
     global PANEL_MESSAGE_ID
     channel = bot.get_channel(PANEL_CHANNEL_ID)
@@ -221,73 +205,98 @@ async def adicionar_reacoes_painel():
         reacoes_fixas.append("🏅")
 
     for r in reacoes_fixas:
-        if r not in [str(e.emoji) for e in painel_msg.reactions]:
-            await painel_msg.add_reaction(r)
+        try:
+            if r not in [str(e.emoji) for e in painel_msg.reactions]:
+                await painel_msg.add_reaction(r)
+                await asyncio.sleep(0.2)  # delay para evitar rate limit
+        except discord.errors.HTTPException:
+            pass
+
+# -----------------------------
+# REAÇÕES INTERATIVAS
+# -----------------------------
+async def atualizar_painel_delay():
+    await asyncio.sleep(1)  # agrupa reações
+    try:
+        await atualizar_painel()
+    except discord.errors.HTTPException:
+        pass
 
 @bot.event
 async def on_reaction_add(reaction, user):
     if user.bot:
         return
 
-    # Painel
     if reaction.message.id == PANEL_MESSAGE_ID:
         emoji = str(reaction.emoji)
-        if emoji == "✅":
-            if user.id not in fila:
-                fila.append(user.id)
-            await reaction.message.remove_reaction(emoji, user)
-            await atualizar_painel()
-        elif emoji == "❌":
-            if user.id in fila:
-                fila.remove(user.id)
-            await reaction.message.remove_reaction(emoji, user)
-            await atualizar_painel()
-        elif emoji == "🏆":
-            await reaction.message.remove_reaction(emoji, user)
-            txt = gerar_ranking_texto()
-            try:
+        try:
+            if emoji == "✅":
+                if user.id not in fila:
+                    fila.append(user.id)
+            elif emoji == "❌":
+                if user.id in fila:
+                    fila.remove(user.id)
+            elif emoji == "🏆":
+                txt = gerar_ranking_texto()
                 msg = await user.send(f"📊 **Ranking 1x1:**\n{txt}\nDeseja ver ranking de torneios?")
                 await msg.add_reaction("⬅️")
                 await msg.add_reaction("❌")
-            except:
-                pass
-        elif emoji == "🏅" and torneio_data.get("active", False):
-            if user.id not in torneio_data["players"]:
-                torneio_data["players"].append(user.id)
-            await reaction.message.remove_reaction(emoji, user)
-            save_json(TORNEIO_FILE, torneio_data)
-            await atualizar_painel()
+            elif emoji == "🏅" and torneio_data.get("active", False):
+                if user.id not in torneio_data["players"]:
+                    torneio_data["players"].append(user.id)
+                    save_json(TORNEIO_FILE, torneio_data)
 
-    # DM ranking de torneio
-    elif str(reaction.emoji) in ["⬅️", "❌"]:
-        try:
-            await reaction.message.remove_reaction(reaction.emoji, user)
-        except:
+                    # DM para jogador
+                    try:
+                        await user.send(
+                            f"🏅 Você foi inscrito no torneio suíço!\n"
+                            "Aguarde o início do torneio. Você será notificado via DM quando a primeira rodada começar."
+                        )
+                    except:
+                        pass
+
+                    # DM para dono
+                    owner = await bot.fetch_user(BOT_OWNER)
+                    inscritos_txt = "\n".join([f"<@{pid}>" for pid in torneio_data["players"]])
+                    try:
+                        msg_owner = await owner.send(
+                            f"📋 **Jogadores inscritos no torneio:**\n{inscritos_txt}\n\n"
+                            "Deseja iniciar o torneio agora?"
+                        )
+                        await msg_owner.add_reaction("✅")
+                        await msg_owner.add_reaction("❌")
+
+                        def check(reaction, u):
+                            return u.id == BOT_OWNER and str(reaction.emoji) in ["✅","❌"] and reaction.message.id == msg_owner.id
+
+                        reaction_owner, u = await bot.wait_for('reaction_add', check=check)
+                        await msg_owner.remove_reaction(reaction_owner.emoji, u)
+                        if str(reaction_owner.emoji) == "✅":
+                            await iniciar_torneio()
+                    except:
+                        pass
+
+            # Remove a reação do usuário para resetar
+            await asyncio.sleep(0.2)
+            await reaction.message.remove_reaction(emoji, user)
+        except discord.errors.HTTPException:
             pass
 
-        if str(reaction.emoji) == "⬅️":
-            txt_torneio = gerar_ranking_torneio_texto()
-            try:
-                await user.send(f"📊 **Ranking de Torneios:**\n{txt_torneio}")
-            except:
-                pass
-        # ❌ apenas encerra
+        asyncio.create_task(atualizar_painel_delay())
 
 # -----------------------------
 # COMANDOS DE TEXTO
 # -----------------------------
 @bot.command()
+async def painel(ctx):
+    await atualizar_painel()
+    await ctx.message.add_reaction("✅")
+
+@bot.command()
 async def torneio(ctx):
-    if ctx.author.id != BOT_OWNER:
-        await ctx.send("❌ Apenas o dono do bot pode iniciar um torneio.")
-        return
-
-    if torneio_data.get("active", False):
-        await ctx.send("⚠️ Já existe um torneio ativo!")
-        return
-
     torneio_data["active"] = True
     torneio_data["players"] = []
+    torneio_data["decklists"] = {}
     torneio_data["round"] = 0
     torneio_data["pairings"] = {}
     torneio_data["results"] = {}
@@ -297,66 +306,53 @@ async def torneio(ctx):
     torneio_data["finished"] = False
     torneio_data["rounds_target"] = None
     save_json(TORNEIO_FILE, torneio_data)
-
+    await ctx.send("🏆 Torneio ativado! Jogadores podem se inscrever clicando 🏅 no painel.")
     await atualizar_painel()
-    await ctx.send("🏆 Torneio suíço iniciado! Jogadores podem se inscrever no painel com 🏅")
 
 @bot.command()
 async def cancelartorneio(ctx):
-    if ctx.author.id != BOT_OWNER:
-        await ctx.send("❌ Apenas o dono do bot pode cancelar o torneio.")
-        return
-
-    if not torneio_data.get("active", False):
-        await ctx.send("⚠️ Nenhum torneio ativo para cancelar.")
-        return
-
     torneio_data["active"] = False
     torneio_data["players"] = []
-    torneio_data["finished"] = True
+    torneio_data["decklists"] = {}
+    torneio_data["round"] = 0
+    torneio_data["pairings"] = {}
+    torneio_data["results"] = {}
+    torneio_data["scores"] = {}
+    torneio_data["played"] = {}
+    torneio_data["byes"] = []
+    torneio_data["finished"] = False
+    torneio_data["rounds_target"] = None
     save_json(TORNEIO_FILE, torneio_data)
+    await ctx.send("❌ Torneio cancelado.")
     await atualizar_painel()
-    await ctx.send("❌ Torneio cancelado sem registrar campeão.")
 
 @bot.command()
 async def resetranking(ctx):
-    if ctx.author.id != BOT_OWNER:
-        await ctx.send("❌ Apenas o dono do bot pode resetar o ranking.")
-        return
     ranking["scores"] = {}
-    ranking["__last_reset"] = datetime.datetime.now(pytz.timezone("America/Sao_Paulo")).strftime("%Y-%m-%d")
+    ranking["__last_reset"] = datetime.datetime.now().isoformat()
     save_json(RANKING_FILE, ranking)
-    await ctx.send("✅ Ranking 1x1 resetado!")
+    await ctx.send("🔄 Ranking 1x1 resetado.")
 
-@bot.command()
-async def painel(ctx):
+# -----------------------------
+# INÍCIO TORNEIO (placeholder)
+# -----------------------------
+async def iniciar_torneio():
+    # Aqui você deve implementar emparelhamento suíço, rodadas e solicitações de decklist
+    # Exemplo de placeholder:
+    for uid in torneio_data["players"]:
+        try:
+            await bot.fetch_user(uid).send("O torneio começou! Prepare seu deck e aguarde a primeira rodada.")
+        except:
+            pass
     await atualizar_painel()
-    await ctx.send("✅ Painel atualizado manualmente.")
 
 # -----------------------------
-# SERVER DUMMY
-# -----------------------------
-async def _health(request):
-    return web.Response(text="OPTCG bot alive")
-
-async def run_web_server():
-    port = int(os.environ.get("PORT", 8000))
-    app = web.Application()
-    app.router.add_get("/", _health)
-    app.router.add_get("/health", _health)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-
-# -----------------------------
-# EVENTOS
+# EVENTO ON READY
 # -----------------------------
 @bot.event
 async def on_ready():
     print(f"Bot conectado como {bot.user}")
-    await atualizar_painel()
-    asyncio.create_task(run_web_server())
+    asyncio.create_task(atualizar_painel_delay())
 
 # -----------------------------
 # EXECUÇÃO
