@@ -1,8 +1,7 @@
 import discord
 from discord.ext import tasks, commands
 from discord import Intents
-import json, os, datetime, pytz
-import asyncio
+import json, os, datetime, pytz, asyncio, math
 from aiohttp import web
 
 # -----------------------------
@@ -60,7 +59,7 @@ for file_path, default_content in json_defaults.items():
             print(f"✅ Arquivo criado automaticamente: {file_path}")
 
 # -----------------------------
-# FUNÇÃO DE CARREGAMENTO SEGURO DE JSON
+# FUNÇÕES DE JSON
 # -----------------------------
 def load_json(file, default):
     try:
@@ -145,21 +144,21 @@ def salvar_ranking(uid, pontos=1):
 
 def gerar_fila_texto():
     if not fila:
-        return "Fila atual: (vazia)"
-    return "Fila atual: " + ", ".join([f"<@{uid}>" for uid in fila])
+        return "(vazia)"
+    return ", ".join([f"<@{uid}>" for uid in fila])
 
 def gerar_partidas_texto():
     if not partidas_ativas:
-        return "Partidas em andamento: nenhuma"
-    txt = "Partidas em andamento:\n"
+        return "Nenhuma"
+    txt = ""
     for m in partidas_ativas.values():
         txt += f"<@{m['player1']}> vs <@{m['player2']}>\n"
     return txt
 
 def gerar_historico_texto():
     if not historico:
-        return "Histórico: nenhuma partida ainda"
-    txt = "Últimas 3 partidas:\n"
+        return "Nenhuma partida ainda"
+    txt = ""
     for h in historico[-3:]:
         txt += f"<@{h['player1']}> vs <@{h['player2']}> → vencedor: <@{h['vencedor']}>\n"
     return txt
@@ -168,43 +167,86 @@ def save_panel_id(message_id):
     save_json(PAINEL_FILE, {"message_id": message_id})
 
 # -----------------------------
-# PAINEL
+# FUNÇÃO DE EMPARELHAMENTO SUÍÇO
+# -----------------------------
+def gerar_emparelhamento_suico():
+    players = torneio_data["players"]
+    scores = torneio_data["scores"]
+    played = torneio_data["played"]
+    pairings = []
+
+    if torneio_data["round"] == 1:
+        # Primeira rodada: sorteio aleatório
+        import random
+        shuffled = players[:]
+        random.shuffle(shuffled)
+        for i in range(0, len(shuffled)-1, 2):
+            pairings.append((shuffled[i], shuffled[i+1]))
+        if len(shuffled) % 2 != 0:
+            torneio_data["byes"] = [shuffled[-1]]
+    else:
+        # Rodadas seguintes: emparelhamento por score suíço
+        sorted_players = sorted(players, key=lambda x: scores.get(x, 0), reverse=True)
+        paired = set()
+        for p in sorted_players:
+            if p in paired:
+                continue
+            for q in sorted_players:
+                if q in paired or q == p:
+                    continue
+                if q not in played.get(p, []):
+                    pairings.append((p,q))
+                    paired.add(p)
+                    paired.add(q)
+                    break
+            else:
+                # Bye se não encontrar par
+                torneio_data["byes"] = [p]
+                paired.add(p)
+    torneio_data["pairings"][str(torneio_data["round"])] = pairings
+    return pairings
+
+# -----------------------------
+# ATUALIZAÇÃO DO PAINEL
 # -----------------------------
 async def atualizar_painel():
     global PANEL_MESSAGE_ID
     channel = bot.get_channel(PANEL_CHANNEL_ID)
     if not channel:
-        print("❌ Canal do painel não encontrado!")
         return
 
     if PANEL_MESSAGE_ID == 0:
-        painel_msg = await channel.send("Painel inicializando...")
+        painel_msg = await channel.send("🎨 **Painel inicializando...**")
         PANEL_MESSAGE_ID = painel_msg.id
         save_panel_id(PANEL_MESSAGE_ID)
     else:
         try:
             painel_msg = await channel.fetch_message(PANEL_MESSAGE_ID)
         except discord.NotFound:
-            painel_msg = await channel.send("Painel inicializando...")
+            painel_msg = await channel.send("🎨 **Painel inicializando...**")
             PANEL_MESSAGE_ID = painel_msg.id
             save_panel_id(PANEL_MESSAGE_ID)
 
-    content = "🎮 **Painel OPTCG**\n\n"
-    content += gerar_fila_texto() + "\n"
-    content += gerar_partidas_texto() + "\n"
-    content += gerar_historico_texto() + "\n\n"
-    content += "Reaja para interagir:\n"
+    content = "🎮 **PAINEL OPTCG** 🎮\n"
+    content += "──────────────────────────\n\n"
+    content += "🟢 **Fila 1x1:**\n" + gerar_fila_texto() + "\n\n"
+    content += "⚔️ **Partidas em andamento:**\n" + gerar_partidas_texto() + "\n\n"
+    content += "📜 **Últimas partidas:**\n" + gerar_historico_texto() + "\n\n"
+    if torneio_data.get("active", False):
+        content += "🏆 **Torneio ativo!**\n"
+        content += f"Rodada atual: {torneio_data.get('round', 0)}\n"
+        content += "Clique na reação para se inscrever!\n\n"
+    content += "💡 **Interaja com o painel:**\n"
     content += "🟢 Entrar na fila 1x1\n"
     content += "🔴 Sair da fila 1x1\n"
     content += "🏆 Ver ranking 1x1\n"
     if torneio_data.get("active", False):
         content += "🏅 Inscrever no torneio / ver ranking de torneios\n"
-
+    content += "\n──────────────────────────"
     await painel_msg.edit(content=content)
-    print("✅ Painel atualizado")
 
 # -----------------------------
-# DUMMY SERVER PARA RENDER
+# SERVER DUMMY
 # -----------------------------
 async def _health(request):
     return web.Response(text="OPTCG bot alive")
@@ -243,7 +285,6 @@ async def check_reset_ranking():
         ranking["scores"] = {}
         ranking["__last_reset"] = now.strftime("%Y-%m-%d")
         save_json(RANKING_FILE, ranking)
-        print("[RANKING] Reset mensal realizado.")
 
 @tasks.loop(seconds=30)
 async def save_states():
@@ -253,7 +294,7 @@ async def save_states():
     save_panel_id(PANEL_MESSAGE_ID)
 
 # -----------------------------
-# RODAR BOT
+# EXECUÇÃO
 # -----------------------------
 if __name__ == "__main__":
     try:
