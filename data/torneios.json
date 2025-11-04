@@ -1,1 +1,14 @@
-{}
+{
+    "active": false,
+    "signup_msg_id": null,
+    "players": [],
+    "decklists": {},
+    "round": 0,
+    "pairings": {},
+    "results": {},
+    "scores": {},
+    "played": {},
+    "byes": [],
+    "finished": false,
+    "rounds_target": null
+}

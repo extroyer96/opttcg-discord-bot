@@ -10,7 +10,6 @@ from aiohttp import web
 # -----------------------------
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 PANEL_CHANNEL_ID = int(os.getenv("PANEL_CHANNEL_ID"))
-PANEL_MESSAGE_ID = int(os.getenv("PANEL_MESSAGE_ID", 0))
 BOT_OWNER = int(os.getenv("BOT_OWNER"))
 
 intents = Intents.default()
@@ -27,25 +26,50 @@ DATA_DIR = "data"
 RANKING_FILE = os.path.join(DATA_DIR, "ranking.json")
 TORNEIO_FILE = os.path.join(DATA_DIR, "torneios.json")
 HIST_FILE = os.path.join(DATA_DIR, "historico.json")
+PAINEL_FILE = os.path.join(DATA_DIR, "painel.json")
 
 os.makedirs(DATA_DIR, exist_ok=True)
+
+# -----------------------------
+# CRIAÇÃO AUTOMÁTICA DE JSONS
+# -----------------------------
+json_defaults = {
+    RANKING_FILE: {"scores": {}, "__last_reset": ""},
+    TORNEIO_FILE: {
+        "active": False,
+        "signup_msg_id": None,
+        "players": [],
+        "decklists": {},
+        "round": 0,
+        "pairings": {},
+        "results": {},
+        "scores": {},
+        "played": {},
+        "byes": [],
+        "finished": False,
+        "rounds_target": None
+    },
+    HIST_FILE: [],
+    PAINEL_FILE: {"message_id": 0}
+}
+
+for file_path, default_content in json_defaults.items():
+    if not os.path.exists(file_path):
+        with open(file_path, "w") as f:
+            json.dump(default_content, f, indent=4)
+            print(f"✅ Arquivo criado automaticamente: {file_path}")
 
 # -----------------------------
 # FUNÇÃO DE CARREGAMENTO SEGURO DE JSON
 # -----------------------------
 def load_json(file, default):
     try:
-        if not os.path.exists(file):
-            with open(file, "w") as f:
-                json.dump(default, f, indent=4)
         with open(file, "r") as f:
             data = json.load(f)
-            # Se default é dict, garante chaves
             if isinstance(default, dict) and isinstance(data, dict):
                 for k, v in default.items():
                     if k not in data:
                         data[k] = v
-            # Se tipos diferentes, retorna default
             elif type(data) != type(default):
                 return default
             return data
@@ -78,6 +102,8 @@ torneio_data = load_json(TORNEIO_FILE, {
     "rounds_target": None
 })
 historico = load_json(HIST_FILE, [])
+panel_data = load_json(PAINEL_FILE, {"message_id": 0})
+PANEL_MESSAGE_ID = panel_data.get("message_id", 0)
 
 # -----------------------------
 # FUNÇÕES AUXILIARES
@@ -138,6 +164,9 @@ def gerar_historico_texto():
         txt += f"<@{h['player1']}> vs <@{h['player2']}> → vencedor: <@{h['vencedor']}>\n"
     return txt
 
+def save_panel_id(message_id):
+    save_json(PAINEL_FILE, {"message_id": message_id})
+
 # -----------------------------
 # PAINEL
 # -----------------------------
@@ -151,12 +180,14 @@ async def atualizar_painel():
     if PANEL_MESSAGE_ID == 0:
         painel_msg = await channel.send("Painel inicializando...")
         PANEL_MESSAGE_ID = painel_msg.id
+        save_panel_id(PANEL_MESSAGE_ID)
     else:
         try:
             painel_msg = await channel.fetch_message(PANEL_MESSAGE_ID)
         except discord.NotFound:
             painel_msg = await channel.send("Painel inicializando...")
             PANEL_MESSAGE_ID = painel_msg.id
+            save_panel_id(PANEL_MESSAGE_ID)
 
     content = "🎮 **Painel OPTCG**\n\n"
     content += gerar_fila_texto() + "\n"
@@ -170,9 +201,62 @@ async def atualizar_painel():
         content += "🏅 Inscrever no torneio / ver ranking de torneios\n"
 
     await painel_msg.edit(content=content)
+    print("✅ Painel atualizado")
 
 # -----------------------------
-# CONTINUAÇÃO: Reações, DM ranking, torneio, tasks etc.
-# (Mesmas funções que já implementamos)
+# DUMMY SERVER PARA RENDER
 # -----------------------------
+async def _health(request):
+    return web.Response(text="OPTCG bot alive")
 
+async def run_web_server():
+    port = int(os.environ.get("PORT", 8000))
+    app = web.Application()
+    app.router.add_get("/", _health)
+    app.router.add_get("/health", _health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"🌐 Servidor HTTP dummy iniciado na porta {port} (Render)")
+
+# -----------------------------
+# ON READY
+# -----------------------------
+@bot.event
+async def on_ready():
+    print(f"Bot conectado como {bot.user}")
+    await asyncio.sleep(2)
+    check_reset_ranking.start()
+    save_states.start()
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_web_server())
+    await atualizar_painel()
+
+# -----------------------------
+# TASKS DE RANKING E SALVAMENTO
+# -----------------------------
+@tasks.loop(hours=1)
+async def check_reset_ranking():
+    now = datetime.datetime.now(pytz.timezone("America/Sao_Paulo"))
+    if now.day == 1 and ranking.get("__last_reset") != now.strftime("%Y-%m-%d"):
+        ranking["scores"] = {}
+        ranking["__last_reset"] = now.strftime("%Y-%m-%d")
+        save_json(RANKING_FILE, ranking)
+        print("[RANKING] Reset mensal realizado.")
+
+@tasks.loop(seconds=30)
+async def save_states():
+    save_json(RANKING_FILE, ranking)
+    save_json(TORNEIO_FILE, torneio_data)
+    save_json(HIST_FILE, historico)
+    save_panel_id(PANEL_MESSAGE_ID)
+
+# -----------------------------
+# RODAR BOT
+# -----------------------------
+if __name__ == "__main__":
+    try:
+        bot.run(DISCORD_TOKEN)
+    except Exception as e:
+        print(f"Erro crítico ao iniciar o bot: {e}")
