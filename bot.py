@@ -3,6 +3,8 @@ from discord.ext import tasks, commands
 from discord import Intents
 import json, os, datetime, pytz
 from colorama import Fore, Style, init
+import asyncio
+from aiohttp import web
 
 init(autoreset=True)
 
@@ -191,6 +193,27 @@ async def cancelar_torneio(ctx):
     torneio["round"] = 0
     save_json(TORNEIO_FILE, torneio)
     await ctx.send("❌ Torneio cancelado. Nenhum campeão registrado.")
+
+# -----------------------------
+# SERVIDOR HTTP DUMMY PARA RENDER
+# -----------------------------
+async def _health(request):
+    return web.Response(text="OPTCG bot alive")
+
+async def run_web_server():
+    port = int(os.environ.get("PORT", 8000))
+    app = web.Application()
+    app.router.add_get("/", _health)
+    app.router.add_get("/health", _health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"🌐 Servidor HTTP dummy iniciado na porta {port} (Render)")
+
+# Adiciona a task do servidor dummy
+loop = asyncio.get_event_loop()
+loop.create_task(run_web_server())
 
 # -----------------------------
 # INICIALIZAÇÃO
