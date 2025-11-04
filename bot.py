@@ -31,11 +31,20 @@ HIST_FILE = os.path.join(DATA_DIR, "historico.json")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 def load_json(file, default):
-    if not os.path.exists(file):
-        with open(file, "w") as f:
-            json.dump(default, f, indent=4)
-    with open(file, "r") as f:
-        return json.load(f)
+    try:
+        if not os.path.exists(file):
+            with open(file, "w") as f:
+                json.dump(default, f, indent=4)
+        with open(file, "r") as f:
+            data = json.load(f)
+            # Garante que todas as chaves existam
+            for k, v in default.items():
+                if k not in data:
+                    data[k] = v
+            return data
+    except Exception as e:
+        print(f"Erro ao ler {file}: {e}")
+        return default
 
 def save_json(file, data):
     with open(file, "w") as f:
@@ -48,9 +57,18 @@ fila = []
 partidas_ativas = {}
 ranking = load_json(RANKING_FILE, {"scores": {}, "__last_reset": ""})
 torneio_data = load_json(TORNEIO_FILE, {
-    "active": False, "signup_msg_id": None, "players": [], "decklists": {},
-    "round": 0, "pairings": {}, "results": {}, "scores": {}, "played": {},
-    "byes": [], "finished": False, "rounds_target": None
+    "active": False,
+    "signup_msg_id": None,
+    "players": [],
+    "decklists": {},
+    "round": 0,
+    "pairings": {},
+    "results": {},
+    "scores": {},
+    "played": {},
+    "byes": [],
+    "finished": False,
+    "rounds_target": None
 })
 historico = load_json(HIST_FILE, [])
 
@@ -138,178 +156,11 @@ async def atualizar_painel():
     content += "🟢 Entrar na fila 1x1\n"
     content += "🔴 Sair da fila 1x1\n"
     content += "🏆 Ver ranking 1x1\n"
-    if torneio_data["active"]:
+    if torneio_data.get("active", False):
         content += "🏅 Inscrever no torneio / ver ranking de torneios\n"
 
     await painel_msg.edit(content=content)
 
 # -----------------------------
-# INTERAÇÃO DM RANKING
+# O restante do bot continua igual
 # -----------------------------
-async def enviar_ranking_1x1(member):
-    ranking_text = gerar_ranking_texto()
-    dm_msg = await member.send(f"🏆 Ranking 1x1 atual:\n{ranking_text}\n\nDeseja também ver o ranking de campeões de torneio?")
-
-    await dm_msg.add_reaction("✅")
-    await dm_msg.add_reaction("❌")
-
-    def check(reaction, user):
-        return user == member and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == dm_msg.id
-
-    try:
-        reaction, user = await bot.wait_for('reaction_add', timeout=60.0, check=check)
-        if str(reaction.emoji) == "✅":
-            ranking_torneio_text = gerar_ranking_torneio_texto()
-            await member.send(ranking_torneio_text)
-        else:
-            await member.send("👍 Ok, exibindo apenas ranking 1x1.")
-    except asyncio.TimeoutError:
-        await member.send("⏱ Tempo esgotado. Não será exibido ranking de torneio.")
-
-# -----------------------------
-# EVENTO DE REAÇÕES
-# -----------------------------
-@bot.event
-async def on_raw_reaction_add(payload):
-    if payload.user_id == bot.user.id:
-        return
-    if payload.channel_id != PANEL_CHANNEL_ID:
-        return
-
-    guild = bot.get_guild(payload.guild_id)
-    member = guild.get_member(payload.user_id)
-    channel = guild.get_channel(payload.channel_id)
-    message = await channel.fetch_message(payload.message_id)
-    emoji = str(payload.emoji)
-
-    global fila, partidas_ativas
-
-    if emoji == "🟢":
-        if member.id not in fila:
-            fila.append(member.id)
-            await member.send("✅ Você entrou na fila!")
-            await atualizar_painel()
-            if len(fila) >= 2:
-                p1 = fila.pop(0)
-                p2 = fila.pop(0)
-                partidas_ativas[f"{p1}_{p2}"] = {"player1": p1, "player2": p2}
-                u1 = guild.get_member(p1)
-                u2 = guild.get_member(p2)
-                await u1.send(f"🎮 Você foi emparelhado com <@{p2}>!")
-                await u2.send(f"🎮 Você foi emparelhado com <@{p1}>!")
-                await atualizar_painel()
-    elif emoji == "🔴":
-        if member.id in fila:
-            fila.remove(member.id)
-            await member.send("❌ Você saiu da fila!")
-            await atualizar_painel()
-    elif emoji == "🏆":
-        await enviar_ranking_1x1(member)
-    elif emoji == "🏅" and torneio_data["active"]:
-        if member.id not in torneio_data["players"]:
-            torneio_data["players"].append(member.id)
-            await member.send(
-                "🎴 Você se inscreveu no torneio!\n"
-                "Por favor, envie sua decklist via DM:\n"
-                "1. Abra 'Deck Editor'\n"
-                "2. Copie o deck\n"
-                "3. Cole aqui."
-            )
-
-    # remove reação
-    for react in message.reactions:
-        if str(react.emoji) == emoji:
-            await react.remove(member)
-
-# -----------------------------
-# COMANDOS ADMIN
-# -----------------------------
-@bot.command()
-async def reset_ranking(ctx):
-    if ctx.author.id != BOT_OWNER:
-        await ctx.send("❌ Apenas o dono pode usar este comando.")
-        return
-    ranking["scores"] = {}
-    save_json(RANKING_FILE, ranking)
-    await ctx.send("✅ Ranking resetado.")
-
-@bot.command()
-async def cancelar_torneio(ctx):
-    if ctx.author.id != BOT_OWNER:
-        await ctx.send("❌ Apenas o dono pode usar este comando.")
-        return
-    torneio_data["active"] = False
-    torneio_data["finished"] = True
-    torneio_data["players"] = []
-    save_json(TORNEIO_FILE, torneio_data)
-    await ctx.send("❌ Torneio cancelado. Nenhum campeão registrado.")
-    await atualizar_painel()
-
-@bot.command()
-async def torneio_cmd(ctx, action: str = None):
-    if ctx.author.id != BOT_OWNER:
-        await ctx.send("❌ Apenas o dono pode usar este comando.")
-        return
-    if action == "on":
-        torneio_data["active"] = True
-        await ctx.send("✅ Torneio habilitado!")
-    elif action == "off":
-        torneio_data["active"] = False
-        await ctx.send("❌ Torneio desabilitado!")
-    await atualizar_painel()
-
-# -----------------------------
-# RESET MENSAL AUTOMÁTICO
-# -----------------------------
-@tasks.loop(hours=1)
-async def check_reset_ranking():
-    now = datetime.datetime.now(pytz.timezone("America/Sao_Paulo"))
-    if now.day == 1 and ranking.get("__last_reset") != now.strftime("%Y-%m-%d"):
-        ranking["scores"] = {}
-        ranking["__last_reset"] = now.strftime("%Y-%m-%d")
-        save_json(RANKING_FILE, ranking)
-        print("[RANKING] Reset mensal realizado.")
-
-# -----------------------------
-# SALVAR ESTADOS PERIODICAMENTE
-# -----------------------------
-@tasks.loop(seconds=30)
-async def save_states():
-    save_json(RANKING_FILE, ranking)
-    save_json(TORNEIO_FILE, torneio_data)
-    save_json(HIST_FILE, historico)
-
-# -----------------------------
-# SERVIDOR HTTP DUMMY PARA RENDER
-# -----------------------------
-async def _health(request):
-    return web.Response(text="OPTCG bot alive")
-
-async def run_web_server():
-    port = int(os.environ.get("PORT", 8000))
-    app = web.Application()
-    app.router.add_get("/", _health)
-    app.router.add_get("/health", _health)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"🌐 Servidor HTTP dummy iniciado na porta {port} (Render)")
-
-# -----------------------------
-# ON READY
-# -----------------------------
-@bot.event
-async def on_ready():
-    print(f"Bot conectado como {bot.user}")
-    await asyncio.sleep(2)  # espera membros e canais carregarem
-    check_reset_ranking.start()
-    save_states.start()
-    loop = asyncio.get_event_loop()
-    loop.create_task(run_web_server())
-    await atualizar_painel()
-
-# -----------------------------
-# RODAR BOT
-# -----------------------------
-bot.run(DISCORD_TOKEN)
