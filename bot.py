@@ -202,19 +202,6 @@ async def run_web_server():
     print(f"🌐 Servidor HTTP dummy iniciado na porta {port} (Render)")
 
 # -----------------------------
-# INICIALIZAÇÃO
-# -----------------------------
-@bot.event
-async def on_ready():
-    print(Fore.GREEN + f"Bot conectado como {bot.user}")
-    # Start tasks dentro do loop correto
-    check_reset_ranking.start()
-    save_states.start()
-    # Inicia o servidor HTTP dummy
-    loop = asyncio.get_event_loop()
-    loop.create_task(run_web_server())
-
-# -----------------------------
 # SALVAR ESTADOS PERIODICAMENTE
 # -----------------------------
 @tasks.loop(seconds=30)
@@ -222,6 +209,38 @@ async def save_states():
     save_json(RANKING_FILE, ranking)
     save_json(TORNEIO_FILE, torneio)
     save_json(HIST_FILE, historico)
+
+# -----------------------------
+# INICIALIZAÇÃO
+# -----------------------------
+@bot.event
+async def on_ready():
+    print(Fore.GREEN + f"Bot conectado como {bot.user}")
+    
+    # Inicia tasks
+    check_reset_ranking.start()
+    save_states.start()
+    
+    # Servidor HTTP dummy
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_web_server())
+
+    # Criar painel automaticamente se PANEL_MESSAGE_ID = 0
+    global PANEL_MESSAGE_ID
+    channel = bot.get_channel(PANEL_CHANNEL_ID)
+    if PANEL_MESSAGE_ID == 0:
+        painel_msg = await channel.send(
+            "🎮 **Painel OPTCG**\n\n"
+            "Reaja para entrar/sair da fila ou ver ranking:\n"
+            "🟢 Entrar na fila 1x1\n"
+            "🔴 Sair da fila 1x1\n"
+            "🏅 Inscrever no torneio\n"
+            "🏆 Ver ranking"
+        )
+        PANEL_MESSAGE_ID = painel_msg.id
+        for emoji in ["🟢", "🔴", "🏅", "🏆"]:
+            await painel_msg.add_reaction(emoji)
+        print(f"📝 Painel criado com ID {PANEL_MESSAGE_ID}")
 
 # -----------------------------
 # RODAR BOT
