@@ -2,11 +2,8 @@ import discord
 from discord.ext import tasks, commands
 from discord import Intents
 import json, os, datetime, pytz
-from colorama import Fore, Style, init
 import asyncio
 from aiohttp import web
-
-init(autoreset=True)
 
 # -----------------------------
 # CONFIGURAÇÕES
@@ -50,7 +47,7 @@ def save_json(file, data):
 fila = []
 partidas_ativas = {}
 ranking = load_json(RANKING_FILE, {"scores": {}, "__last_reset": ""})
-torneio = load_json(TORNEIO_FILE, {
+torneio_data = load_json(TORNEIO_FILE, {
     "active": False, "signup_msg_id": None, "players": [], "decklists": {},
     "round": 0, "pairings": {}, "results": {}, "scores": {}, "played": {},
     "byes": [], "finished": False, "rounds_target": None
@@ -68,7 +65,7 @@ def gerar_ranking_texto():
     return txt if txt else "Nenhum registro ainda."
 
 def gerar_ranking_torneio_texto():
-    scores = torneio.get("scores", {})
+    scores = torneio_data.get("scores", {})
     if not scores:
         return "🏅 Nenhum campeão registrado ainda."
     sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
@@ -131,7 +128,7 @@ async def atualizar_painel():
     content += "🟢 Entrar na fila 1x1\n"
     content += "🔴 Sair da fila 1x1\n"
     content += "🏆 Ver ranking 1x1\n"
-    if torneio["active"]:
+    if torneio_data["active"]:
         content += "🏅 Inscrever no torneio / ver ranking de torneios\n"
     await painel_msg.edit(content=content)
 
@@ -197,9 +194,9 @@ async def on_raw_reaction_add(payload):
             await atualizar_painel()
     elif emoji == "🏆":
         await enviar_ranking_1x1(member)
-    elif emoji == "🏅" and torneio["active"]:
-        if member.id not in torneio["players"]:
-            torneio["players"].append(member.id)
+    elif emoji == "🏅" and torneio_data["active"]:
+        if member.id not in torneio_data["players"]:
+            torneio_data["players"].append(member.id)
             await member.send(
                 "🎴 Você se inscreveu no torneio!\n"
                 "Por favor, envie sua decklist via DM:\n"
@@ -230,24 +227,23 @@ async def cancelar_torneio(ctx):
     if ctx.author.id != BOT_OWNER:
         await ctx.send("❌ Apenas o dono pode usar este comando.")
         return
-    torneio["active"] = False
-    torneio["finished"] = True
-    torneio["players"] = []
-    save_json(TORNEIO_FILE, torneio)
+    torneio_data["active"] = False
+    torneio_data["finished"] = True
+    torneio_data["players"] = []
+    save_json(TORNEIO_FILE, torneio_data)
     await ctx.send("❌ Torneio cancelado. Nenhum campeão registrado.")
     await atualizar_painel()
 
 @bot.command()
-async def torneio(ctx, action: str = None):
+async def torneio_cmd(ctx, action: str = None):
     if ctx.author.id != BOT_OWNER:
         await ctx.send("❌ Apenas o dono pode usar este comando.")
         return
-    global torneio
     if action == "on":
-        torneio["active"] = True
+        torneio_data["active"] = True
         await ctx.send("✅ Torneio habilitado!")
     elif action == "off":
-        torneio["active"] = False
+        torneio_data["active"] = False
         await ctx.send("❌ Torneio desabilitado!")
     await atualizar_painel()
 
@@ -261,7 +257,7 @@ async def check_reset_ranking():
         ranking["scores"] = {}
         ranking["__last_reset"] = now.strftime("%Y-%m-%d")
         save_json(RANKING_FILE, ranking)
-        print(Fore.YELLOW + "[RANKING] Reset mensal realizado.")
+        print("[RANKING] Reset mensal realizado.")
 
 # -----------------------------
 # SALVAR ESTADOS PERIODICAMENTE
@@ -269,7 +265,7 @@ async def check_reset_ranking():
 @tasks.loop(seconds=30)
 async def save_states():
     save_json(RANKING_FILE, ranking)
-    save_json(TORNEIO_FILE, torneio)
+    save_json(TORNEIO_FILE, torneio_data)
     save_json(HIST_FILE, historico)
 
 # -----------------------------
@@ -294,7 +290,7 @@ async def run_web_server():
 # -----------------------------
 @bot.event
 async def on_ready():
-    print(Fore.GREEN + f"Bot conectado como {bot.user}")
+    print(f"Bot conectado como {bot.user}")
     check_reset_ranking.start()
     save_states.start()
     loop = asyncio.get_event_loop()
