@@ -110,9 +110,7 @@ async def on_raw_reaction_add(payload):
     message = await channel.fetch_message(payload.message_id)
     emoji = str(payload.emoji)
 
-    # -------------------------
     # Fila 1x1
-    # -------------------------
     if emoji == "🟢":
         if member.id not in fila:
             fila.append(member.id)
@@ -126,9 +124,7 @@ async def on_raw_reaction_add(payload):
         else:
             await member.send("⚠️ Você não estava na fila!")
 
-    # -------------------------
     # Torneio
-    # -------------------------
     elif emoji == "🏅" and torneio["active"]:
         if member.id not in torneio["players"]:
             torneio["players"].append(member.id)
@@ -142,16 +138,12 @@ async def on_raw_reaction_add(payload):
         else:
             await member.send("⚠️ Já está inscrito no torneio!")
 
-    # -------------------------
     # Ranking
-    # -------------------------
     elif emoji == "🏆":
         ranking_text = gerar_ranking_texto()
         await member.send(f"🏅 Ranking atual:\n{ranking_text}")
 
-    # -------------------------
-    # REMOVE A REAÇÃO
-    # -------------------------
+    # Remove a reação
     for react in message.reactions:
         if str(react.emoji) == emoji:
             await react.remove(member)
@@ -167,8 +159,6 @@ async def check_reset_ranking():
         ranking["__last_reset"] = now.strftime("%Y-%m-%d")
         save_json(RANKING_FILE, ranking)
         print(Fore.YELLOW + "[RANKING] Reset mensal realizado.")
-
-check_reset_ranking.start()
 
 # -----------------------------
 # COMANDOS ADMIN
@@ -211,16 +201,18 @@ async def run_web_server():
     await site.start()
     print(f"🌐 Servidor HTTP dummy iniciado na porta {port} (Render)")
 
-# Adiciona a task do servidor dummy
-loop = asyncio.get_event_loop()
-loop.create_task(run_web_server())
-
 # -----------------------------
 # INICIALIZAÇÃO
 # -----------------------------
 @bot.event
 async def on_ready():
     print(Fore.GREEN + f"Bot conectado como {bot.user}")
+    # Start tasks dentro do loop correto
+    check_reset_ranking.start()
+    save_states.start()
+    # Inicia o servidor HTTP dummy
+    loop = asyncio.get_event_loop()
+    loop.create_task(run_web_server())
 
 # -----------------------------
 # SALVAR ESTADOS PERIODICAMENTE
@@ -230,8 +222,6 @@ async def save_states():
     save_json(RANKING_FILE, ranking)
     save_json(TORNEIO_FILE, torneio)
     save_json(HIST_FILE, historico)
-
-save_states.start()
 
 # -----------------------------
 # RODAR BOT
