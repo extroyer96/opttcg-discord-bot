@@ -116,10 +116,20 @@ def gerar_historico_texto():
 async def atualizar_painel():
     global PANEL_MESSAGE_ID
     channel = bot.get_channel(PANEL_CHANNEL_ID)
+    if not channel:
+        print("❌ Canal do painel não encontrado!")
+        return
+
     if PANEL_MESSAGE_ID == 0:
         painel_msg = await channel.send("Painel inicializando...")
         PANEL_MESSAGE_ID = painel_msg.id
-    painel_msg = await channel.fetch_message(PANEL_MESSAGE_ID)
+    else:
+        try:
+            painel_msg = await channel.fetch_message(PANEL_MESSAGE_ID)
+        except discord.NotFound:
+            painel_msg = await channel.send("Painel inicializando...")
+            PANEL_MESSAGE_ID = painel_msg.id
+
     content = "🎮 **Painel OPTCG**\n\n"
     content += gerar_fila_texto() + "\n"
     content += gerar_partidas_texto() + "\n"
@@ -130,6 +140,7 @@ async def atualizar_painel():
     content += "🏆 Ver ranking 1x1\n"
     if torneio_data["active"]:
         content += "🏅 Inscrever no torneio / ver ranking de torneios\n"
+
     await painel_msg.edit(content=content)
 
 # -----------------------------
@@ -291,6 +302,7 @@ async def run_web_server():
 @bot.event
 async def on_ready():
     print(f"Bot conectado como {bot.user}")
+    await asyncio.sleep(2)  # espera membros e canais carregarem
     check_reset_ranking.start()
     save_states.start()
     loop = asyncio.get_event_loop()
