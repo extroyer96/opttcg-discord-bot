@@ -30,6 +30,9 @@ HIST_FILE = os.path.join(DATA_DIR, "historico.json")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# -----------------------------
+# FUNÇÃO DE CARREGAMENTO SEGURO DE JSON
+# -----------------------------
 def load_json(file, default):
     try:
         if not os.path.exists(file):
@@ -37,10 +40,14 @@ def load_json(file, default):
                 json.dump(default, f, indent=4)
         with open(file, "r") as f:
             data = json.load(f)
-            # Garante que todas as chaves existam
-            for k, v in default.items():
-                if k not in data:
-                    data[k] = v
+            # Se default é dict, garante chaves
+            if isinstance(default, dict) and isinstance(data, dict):
+                for k, v in default.items():
+                    if k not in data:
+                        data[k] = v
+            # Se tipos diferentes, retorna default
+            elif type(data) != type(default):
+                return default
             return data
     except Exception as e:
         print(f"Erro ao ler {file}: {e}")
@@ -131,6 +138,9 @@ def gerar_historico_texto():
         txt += f"<@{h['player1']}> vs <@{h['player2']}> → vencedor: <@{h['vencedor']}>\n"
     return txt
 
+# -----------------------------
+# PAINEL
+# -----------------------------
 async def atualizar_painel():
     global PANEL_MESSAGE_ID
     channel = bot.get_channel(PANEL_CHANNEL_ID)
@@ -162,5 +172,7 @@ async def atualizar_painel():
     await painel_msg.edit(content=content)
 
 # -----------------------------
-# O restante do bot continua igual
+# CONTINUAÇÃO: Reações, DM ranking, torneio, tasks etc.
+# (Mesmas funções que já implementamos)
 # -----------------------------
+
