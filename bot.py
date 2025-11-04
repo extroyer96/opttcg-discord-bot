@@ -1,9 +1,8 @@
 import discord
 from discord.ext import tasks, commands
 from discord import Intents
-import json, os, datetime, pytz, asyncio, math
+import json, os, datetime, pytz, asyncio, random
 from aiohttp import web
-import random
 
 # -----------------------------
 # CONFIGURAÇÕES
@@ -166,7 +165,7 @@ def save_panel_id(message_id):
     save_json(PAINEL_FILE, {"message_id": message_id})
 
 # -----------------------------
-# PAINEL VISUAL
+# PAINEL COMPACTO
 # -----------------------------
 async def atualizar_painel():
     global PANEL_MESSAGE_ID
@@ -188,16 +187,15 @@ async def atualizar_painel():
 
     content = "🎮 **PAINEL OPTCG** 🎮\n"
     content += "──────────────────────────\n\n"
-    content += "🟢 **Fila 1x1:**\n" + gerar_fila_texto() + "\n\n"
+    content += "✅ **Fila 1x1:**\n" + gerar_fila_texto() + "\n\n"
     content += "⚔️ **Partidas em andamento:**\n" + gerar_partidas_texto() + "\n\n"
     content += "📜 **Últimas partidas:**\n" + gerar_historico_texto() + "\n\n"
     if torneio_data.get("active", False):
-        content += "🏆 **Torneio ativo!**\n"
-        content += f"Rodada atual: {torneio_data.get('round', 0)}\n"
-        content += "Clique na reação para se inscrever!\n\n"
+        content += "🏆 **Torneio ativo!**\nRodada atual: {}\nClique na reação 🏅 para se inscrever!\n\n".format(
+            torneio_data.get("round", 0)
+        )
     content += "💡 **Interaja com o painel:**\n"
-    content += "🟢 Entrar na fila 1x1\n"
-    content += "🔴 Sair da fila 1x1\n"
+    content += "✅ Entrar na fila\n❌ Sair da fila\n"
     content += "🏆 Ver ranking 1x1\n"
     if torneio_data.get("active", False):
         content += "🏅 Inscrever no torneio / ver ranking de torneios\n"
@@ -218,7 +216,7 @@ async def adicionar_reacoes_painel():
     except discord.NotFound:
         return
 
-    reacoes_fixas = ["🟢", "🔴", "🏆"]
+    reacoes_fixas = ["✅", "❌", "🏆"]
     if torneio_data.get("active", False):
         reacoes_fixas.append("🏅")
 
@@ -230,35 +228,50 @@ async def adicionar_reacoes_painel():
 async def on_reaction_add(reaction, user):
     if user.bot:
         return
-    if reaction.message.id != PANEL_MESSAGE_ID:
-        return
-    emoji = str(reaction.emoji)
 
-    if emoji == "🟢":
-        if user.id not in fila:
-            fila.append(user.id)
-        await reaction.message.remove_reaction(emoji, user)
-        await atualizar_painel()
-    elif emoji == "🔴":
-        if user.id in fila:
-            fila.remove(user.id)
-        await reaction.message.remove_reaction(emoji, user)
-        await atualizar_painel()
-    elif emoji == "🏆":
-        await reaction.message.remove_reaction(emoji, user)
-        txt = gerar_ranking_texto()
+    # Painel
+    if reaction.message.id == PANEL_MESSAGE_ID:
+        emoji = str(reaction.emoji)
+        if emoji == "✅":
+            if user.id not in fila:
+                fila.append(user.id)
+            await reaction.message.remove_reaction(emoji, user)
+            await atualizar_painel()
+        elif emoji == "❌":
+            if user.id in fila:
+                fila.remove(user.id)
+            await reaction.message.remove_reaction(emoji, user)
+            await atualizar_painel()
+        elif emoji == "🏆":
+            await reaction.message.remove_reaction(emoji, user)
+            txt = gerar_ranking_texto()
+            try:
+                msg = await user.send(f"📊 **Ranking 1x1:**\n{txt}\nDeseja ver ranking de torneios?")
+                await msg.add_reaction("⬅️")
+                await msg.add_reaction("❌")
+            except:
+                pass
+        elif emoji == "🏅" and torneio_data.get("active", False):
+            if user.id not in torneio_data["players"]:
+                torneio_data["players"].append(user.id)
+            await reaction.message.remove_reaction(emoji, user)
+            save_json(TORNEIO_FILE, torneio_data)
+            await atualizar_painel()
+
+    # DM ranking de torneio
+    elif str(reaction.emoji) in ["⬅️", "❌"]:
         try:
-            msg = await user.send(f"📊 **Ranking 1x1:**\n{txt}\nDeseja ver ranking de torneios?")
-            await msg.add_reaction("⬅️")
-            await msg.add_reaction("❌")
+            await reaction.message.remove_reaction(reaction.emoji, user)
         except:
             pass
-    elif emoji == "🏅" and torneio_data.get("active", False):
-        if user.id not in torneio_data["players"]:
-            torneio_data["players"].append(user.id)
-        await reaction.message.remove_reaction(emoji, user)
-        save_json(TORNEIO_FILE, torneio_data)
-        await atualizar_painel()
+
+        if str(reaction.emoji) == "⬅️":
+            txt_torneio = gerar_ranking_torneio_texto()
+            try:
+                await user.send(f"📊 **Ranking de Torneios:**\n{txt_torneio}")
+            except:
+                pass
+        # ❌ apenas encerra
 
 # -----------------------------
 # SERVER DUMMY
@@ -291,7 +304,7 @@ async def on_ready():
     await atualizar_painel()
 
 # -----------------------------
-# TASKS DE RANKING E SALVAMENTO
+# TASKS
 # -----------------------------
 @tasks.loop(hours=1)
 async def check_reset_ranking():
