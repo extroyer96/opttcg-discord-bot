@@ -3,6 +3,7 @@ from discord.ext import tasks, commands
 from discord import Intents
 import json, os, datetime, pytz, asyncio, math
 from aiohttp import web
+import random
 
 # -----------------------------
 # CONFIGURAÇÕES
@@ -56,7 +57,6 @@ for file_path, default_content in json_defaults.items():
     if not os.path.exists(file_path):
         with open(file_path, "w") as f:
             json.dump(default_content, f, indent=4)
-            print(f"✅ Arquivo criado automaticamente: {file_path}")
 
 # -----------------------------
 # FUNÇÕES DE JSON
@@ -72,8 +72,7 @@ def load_json(file, default):
             elif type(data) != type(default):
                 return default
             return data
-    except Exception as e:
-        print(f"Erro ao ler {file}: {e}")
+    except:
         return default
 
 def save_json(file, data):
@@ -167,47 +166,7 @@ def save_panel_id(message_id):
     save_json(PAINEL_FILE, {"message_id": message_id})
 
 # -----------------------------
-# FUNÇÃO DE EMPARELHAMENTO SUÍÇO
-# -----------------------------
-def gerar_emparelhamento_suico():
-    players = torneio_data["players"]
-    scores = torneio_data["scores"]
-    played = torneio_data["played"]
-    pairings = []
-
-    if torneio_data["round"] == 1:
-        # Primeira rodada: sorteio aleatório
-        import random
-        shuffled = players[:]
-        random.shuffle(shuffled)
-        for i in range(0, len(shuffled)-1, 2):
-            pairings.append((shuffled[i], shuffled[i+1]))
-        if len(shuffled) % 2 != 0:
-            torneio_data["byes"] = [shuffled[-1]]
-    else:
-        # Rodadas seguintes: emparelhamento por score suíço
-        sorted_players = sorted(players, key=lambda x: scores.get(x, 0), reverse=True)
-        paired = set()
-        for p in sorted_players:
-            if p in paired:
-                continue
-            for q in sorted_players:
-                if q in paired or q == p:
-                    continue
-                if q not in played.get(p, []):
-                    pairings.append((p,q))
-                    paired.add(p)
-                    paired.add(q)
-                    break
-            else:
-                # Bye se não encontrar par
-                torneio_data["byes"] = [p]
-                paired.add(p)
-    torneio_data["pairings"][str(torneio_data["round"])] = pairings
-    return pairings
-
-# -----------------------------
-# ATUALIZAÇÃO DO PAINEL
+# PAINEL VISUAL
 # -----------------------------
 async def atualizar_painel():
     global PANEL_MESSAGE_ID
@@ -244,6 +203,62 @@ async def atualizar_painel():
         content += "🏅 Inscrever no torneio / ver ranking de torneios\n"
     content += "\n──────────────────────────"
     await painel_msg.edit(content=content)
+    await adicionar_reacoes_painel()
+
+# -----------------------------
+# REAÇÕES INTERATIVAS
+# -----------------------------
+async def adicionar_reacoes_painel():
+    global PANEL_MESSAGE_ID
+    channel = bot.get_channel(PANEL_CHANNEL_ID)
+    if not channel:
+        return
+    try:
+        painel_msg = await channel.fetch_message(PANEL_MESSAGE_ID)
+    except discord.NotFound:
+        return
+
+    reacoes_fixas = ["🟢", "🔴", "🏆"]
+    if torneio_data.get("active", False):
+        reacoes_fixas.append("🏅")
+
+    for r in reacoes_fixas:
+        if r not in [str(e.emoji) for e in painel_msg.reactions]:
+            await painel_msg.add_reaction(r)
+
+@bot.event
+async def on_reaction_add(reaction, user):
+    if user.bot:
+        return
+    if reaction.message.id != PANEL_MESSAGE_ID:
+        return
+    emoji = str(reaction.emoji)
+
+    if emoji == "🟢":
+        if user.id not in fila:
+            fila.append(user.id)
+        await reaction.message.remove_reaction(emoji, user)
+        await atualizar_painel()
+    elif emoji == "🔴":
+        if user.id in fila:
+            fila.remove(user.id)
+        await reaction.message.remove_reaction(emoji, user)
+        await atualizar_painel()
+    elif emoji == "🏆":
+        await reaction.message.remove_reaction(emoji, user)
+        txt = gerar_ranking_texto()
+        try:
+            msg = await user.send(f"📊 **Ranking 1x1:**\n{txt}\nDeseja ver ranking de torneios?")
+            await msg.add_reaction("⬅️")
+            await msg.add_reaction("❌")
+        except:
+            pass
+    elif emoji == "🏅" and torneio_data.get("active", False):
+        if user.id not in torneio_data["players"]:
+            torneio_data["players"].append(user.id)
+        await reaction.message.remove_reaction(emoji, user)
+        save_json(TORNEIO_FILE, torneio_data)
+        await atualizar_painel()
 
 # -----------------------------
 # SERVER DUMMY
