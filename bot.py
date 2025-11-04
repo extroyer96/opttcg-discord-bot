@@ -274,6 +274,66 @@ async def on_reaction_add(reaction, user):
         # ❌ apenas encerra
 
 # -----------------------------
+# COMANDOS DE TEXTO
+# -----------------------------
+@bot.command()
+async def torneio(ctx):
+    if ctx.author.id != BOT_OWNER:
+        await ctx.send("❌ Apenas o dono do bot pode iniciar um torneio.")
+        return
+
+    if torneio_data.get("active", False):
+        await ctx.send("⚠️ Já existe um torneio ativo!")
+        return
+
+    torneio_data["active"] = True
+    torneio_data["players"] = []
+    torneio_data["round"] = 0
+    torneio_data["pairings"] = {}
+    torneio_data["results"] = {}
+    torneio_data["scores"] = {}
+    torneio_data["played"] = {}
+    torneio_data["byes"] = []
+    torneio_data["finished"] = False
+    torneio_data["rounds_target"] = None
+    save_json(TORNEIO_FILE, torneio_data)
+
+    await atualizar_painel()
+    await ctx.send("🏆 Torneio suíço iniciado! Jogadores podem se inscrever no painel com 🏅")
+
+@bot.command()
+async def cancelartorneio(ctx):
+    if ctx.author.id != BOT_OWNER:
+        await ctx.send("❌ Apenas o dono do bot pode cancelar o torneio.")
+        return
+
+    if not torneio_data.get("active", False):
+        await ctx.send("⚠️ Nenhum torneio ativo para cancelar.")
+        return
+
+    torneio_data["active"] = False
+    torneio_data["players"] = []
+    torneio_data["finished"] = True
+    save_json(TORNEIO_FILE, torneio_data)
+    await atualizar_painel()
+    await ctx.send("❌ Torneio cancelado sem registrar campeão.")
+
+@bot.command()
+async def resetranking(ctx):
+    if ctx.author.id != BOT_OWNER:
+        await ctx.send("❌ Apenas o dono do bot pode resetar o ranking.")
+        return
+    ranking["scores"] = {}
+    ranking["__last_reset"] = datetime.datetime.now(pytz.timezone("America/Sao_Paulo")).strftime("%Y-%m-%d")
+    save_json(RANKING_FILE, ranking)
+    await ctx.send("✅ Ranking 1x1 resetado!")
+
+@bot.command()
+async def painel(ctx):
+    await atualizar_painel()
+    await ctx.send("✅ Painel atualizado manualmente.")
+
+# -----------------------------
 # SERVER DUMMY
 # -----------------------------
 async def _health(request):
@@ -288,44 +348,17 @@ async def run_web_server():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"🌐 Servidor HTTP dummy iniciado na porta {port} (Render)")
 
 # -----------------------------
-# ON READY
+# EVENTOS
 # -----------------------------
 @bot.event
 async def on_ready():
     print(f"Bot conectado como {bot.user}")
-    await asyncio.sleep(2)
-    check_reset_ranking.start()
-    save_states.start()
-    loop = asyncio.get_event_loop()
-    loop.create_task(run_web_server())
     await atualizar_painel()
-
-# -----------------------------
-# TASKS
-# -----------------------------
-@tasks.loop(hours=1)
-async def check_reset_ranking():
-    now = datetime.datetime.now(pytz.timezone("America/Sao_Paulo"))
-    if now.day == 1 and ranking.get("__last_reset") != now.strftime("%Y-%m-%d"):
-        ranking["scores"] = {}
-        ranking["__last_reset"] = now.strftime("%Y-%m-%d")
-        save_json(RANKING_FILE, ranking)
-
-@tasks.loop(seconds=30)
-async def save_states():
-    save_json(RANKING_FILE, ranking)
-    save_json(TORNEIO_FILE, torneio_data)
-    save_json(HIST_FILE, historico)
-    save_panel_id(PANEL_MESSAGE_ID)
+    asyncio.create_task(run_web_server())
 
 # -----------------------------
 # EXECUÇÃO
 # -----------------------------
-if __name__ == "__main__":
-    try:
-        bot.run(DISCORD_TOKEN)
-    except Exception as e:
-        print(f"Erro crítico ao iniciar o bot: {e}")
+bot.run(DISCORD_TOKEN)
