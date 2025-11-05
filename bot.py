@@ -89,9 +89,10 @@ torneio_data = load_json(TORNEIO_FILE, {
 historico = load_json(HIST_FILE, [])
 panel_data = load_json(PAINEL_FILE, {"message_id": 0})
 PANEL_MESSAGE_ID = panel_data.get("message_id", 0)
+mostrar_inscritos = False  # toggle para painel
 
 # -----------------------------
-# RANKING / HISTÓRICO
+# FUNÇÕES DE RANKING / HISTÓRICO
 # -----------------------------
 def gerar_ranking_texto():
     txt = ""
@@ -177,12 +178,12 @@ async def atualizar_painel():
     content += "⚔️ **Partidas em andamento:**\n" + gerar_partidas_texto() + "\n\n"
     content += "📜 **Últimas partidas:**\n" + gerar_historico_texto() + "\n\n"
     if torneio_data.get("active", False):
-        content += "🏆 **Torneio ativo!**\nRodada atual: {}\nClique na reação 🏅 para se inscrever!\n\n".format(
-            torneio_data.get("round", 0)
-        )
+        content += "🏆 **Torneio ativo!**\nRodada atual: {}\nClique na reação 🏅 para se inscrever!\n".format(torneio_data.get("round",0))
+        if mostrar_inscritos:
+            inscritos_txt = ", ".join([f"<@{pid}>" for pid in torneio_data["players"]]) or "(nenhum)"
+            content += f"📝 **Inscritos:** {inscritos_txt}\n"
     content += "💡 **Interaja com o painel:**\n"
-    content += "✅ Entrar na fila\n❌ Sair da fila\n"
-    content += "🏆 Ver ranking 1x1\n"
+    content += "✅ Entrar na fila\n❌ Sair da fila\n🏆 Ver ranking 1x1\n"
     if torneio_data.get("active", False):
         content += "🏅 Inscrever no torneio / ver ranking de torneios\n"
     content += "\n──────────────────────────"
@@ -207,7 +208,7 @@ async def adicionar_reacoes_painel():
         try:
             if r not in [str(e.emoji) for e in painel_msg.reactions]:
                 await painel_msg.add_reaction(r)
-                await asyncio.sleep(0.5)  # delay maior para reduzir rate limit
+                await asyncio.sleep(0.5)
         except discord.errors.HTTPException:
             pass
 
@@ -245,7 +246,6 @@ async def on_reaction_add(reaction, user):
             if user.id not in torneio_data["players"]:
                 torneio_data["players"].append(user.id)
                 save_json(TORNEIO_FILE, torneio_data)
-
                 try:
                     await user.send(
                         f"🏅 Você foi inscrito no torneio suíço!\n"
@@ -253,7 +253,6 @@ async def on_reaction_add(reaction, user):
                     )
                 except:
                     pass
-
                 owner = await bot.fetch_user(BOT_OWNER)
                 inscritos_txt = "\n".join([f"<@{pid}>" for pid in torneio_data["players"]])
                 try:
@@ -263,10 +262,8 @@ async def on_reaction_add(reaction, user):
                     )
                     await msg_owner.add_reaction("✅")
                     await msg_owner.add_reaction("❌")
-
                     def check(reaction, u):
                         return u.id == BOT_OWNER and str(reaction.emoji) in ["✅","❌"] and reaction.message.id == msg_owner.id
-
                     reaction_owner, u = await bot.wait_for('reaction_add', check=check)
                     await msg_owner.remove_reaction(reaction_owner.emoji, u)
                     if str(reaction_owner.emoji) == "✅":
@@ -277,7 +274,6 @@ async def on_reaction_add(reaction, user):
         await reaction.message.remove_reaction(emoji, user)
     except discord.errors.HTTPException:
         pass
-
     asyncio.create_task(atualizar_painel_delay())
 
 # -----------------------------
@@ -287,6 +283,13 @@ async def on_reaction_add(reaction, user):
 async def painel(ctx):
     await atualizar_painel()
     await ctx.message.add_reaction("✅")
+
+@bot.command()
+async def toggleinscritos(ctx):
+    global mostrar_inscritos
+    mostrar_inscritos = not mostrar_inscritos
+    await ctx.send(f"✅ Lista de inscritos agora {'visível' if mostrar_inscritos else 'oculta'} no painel.")
+    await atualizar_painel()
 
 @bot.command()
 async def torneio(ctx):
@@ -333,8 +336,36 @@ async def resetranking(ctx):
     save_json(RANKING_FILE, ranking)
     await ctx.send("🔄 Ranking 1x1 resetado.")
 
+@bot.command()
+async def começartorneio(ctx):
+    if ctx.author.id != BOT_OWNER:
+        await ctx.send("❌ Apenas o dono do bot pode iniciar o torneio.")
+        return
+    if not torneio_data.get("active", False):
+        await ctx.send("⚠️ Nenhum torneio ativo para iniciar.")
+        return
+    await iniciar_torneio()
+    await ctx.send("🏁 Torneio iniciado!")
+
+@bot.command()
+async def novopainel(ctx):
+    global PANEL_MESSAGE_ID
+    channel = bot.get_channel(PANEL_CHANNEL_ID)
+    if not channel:
+        return
+    async for msg in channel.history(limit=100):
+        try:
+            await msg.delete()
+            await asyncio.sleep(0.2)
+        except:
+            pass
+    PANEL_MESSAGE_ID = 0
+    save_panel_id(PANEL_MESSAGE_ID)
+    await ctx.send("🔄 Painel reiniciado. Um novo painel será criado automaticamente.")
+    await atualizar_painel()
+
 # -----------------------------
-# INÍCIO TORNEIO (placeholder)
+# INÍCIO TORNEIO
 # -----------------------------
 async def iniciar_torneio():
     for uid in torneio_data["players"]:
