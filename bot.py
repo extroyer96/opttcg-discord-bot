@@ -74,7 +74,6 @@ partidas_ativas = {}
 ranking = load_json(RANKING_FILE, {"scores": {}, "__last_reset": ""})
 torneio_data = load_json(TORNEIO_FILE, {
     "active": False,
-    "signup_msg_id": None,
     "players": [],
     "decklists": {},
     "round": 0,
@@ -242,35 +241,44 @@ async def on_reaction_add(reaction, user):
             msg = await user.send(f"📊 **Ranking 1x1:**\n{txt}\nDeseja ver ranking de torneios?")
             await msg.add_reaction("⬅️")
             await msg.add_reaction("❌")
+
+            def check_dm(reaction, u):
+                return u.id == user.id and str(reaction.emoji) in ["⬅️","❌"] and reaction.message.id == msg.id
+            try:
+                reaction_dm, _ = await bot.wait_for('reaction_add', check=check_dm, timeout=60)
+                if str(reaction_dm.emoji) == "⬅️":
+                    txt_t = gerar_ranking_torneio_texto()
+                    await user.send(f"{txt_t}")
+            except asyncio.TimeoutError:
+                pass
         elif emoji == "🏅" and torneio_data.get("active", False):
             if user.id not in torneio_data["players"]:
                 torneio_data["players"].append(user.id)
                 save_json(TORNEIO_FILE, torneio_data)
                 try:
-                    await user.send(
-                        f"🏅 Você foi inscrito no torneio suíço!\n"
-                        "Aguarde o início do torneio. Você será notificado via DM quando a primeira rodada começar."
-                    )
+                    await user.send("✅ Você se inscreveu no torneio suíço!\nAguarde o início.")
                 except:
                     pass
                 owner = await bot.fetch_user(BOT_OWNER)
                 inscritos_txt = "\n".join([f"<@{pid}>" for pid in torneio_data["players"]])
                 try:
-                    msg_owner = await owner.send(
-                        f"📋 **Jogadores inscritos no torneio:**\n{inscritos_txt}\n\n"
-                        "Deseja iniciar o torneio agora?"
-                    )
+                    msg_owner = await owner.send(f"📋 **Jogadores inscritos:**\n{inscritos_txt}\nDeseja iniciar o torneio agora?")
                     await msg_owner.add_reaction("✅")
                     await msg_owner.add_reaction("❌")
-                    def check(reaction, u):
-                        return u.id == BOT_OWNER and str(reaction.emoji) in ["✅","❌"] and reaction.message.id == msg_owner.id
-                    reaction_owner, u = await bot.wait_for('reaction_add', check=check)
-                    await msg_owner.remove_reaction(reaction_owner.emoji, u)
-                    if str(reaction_owner.emoji) == "✅":
-                        await iniciar_torneio()
+
+                    async def owner_iniciar_torneio(msg_owner):
+                        def check(reaction, u):
+                            return u.id == BOT_OWNER and str(reaction.emoji) in ["✅","❌"] and reaction.message.id == msg_owner.id
+                        try:
+                            reaction_owner, u = await bot.wait_for('reaction_add', check=check, timeout=3600)
+                            await msg_owner.remove_reaction(reaction_owner.emoji, u)
+                            if str(reaction_owner.emoji) == "✅":
+                                asyncio.create_task(iniciar_torneio())
+                        except asyncio.TimeoutError:
+                            await msg_owner.channel.send("⏱️ Tempo esgotado. Torneio não iniciado.")
+                    asyncio.create_task(owner_iniciar_torneio(msg_owner))
                 except:
                     pass
-        await asyncio.sleep(0.3)
         await reaction.message.remove_reaction(emoji, user)
     except discord.errors.HTTPException:
         pass
@@ -364,13 +372,46 @@ async def novopainel(ctx):
     await ctx.send("🔄 Painel reiniciado. Um novo painel será criado automaticamente.")
     await atualizar_painel()
 
+@bot.command()
+async def statustorneio(ctx):
+    if not torneio_data.get("active", False):
+        await ctx.send("⚠️ Nenhum torneio ativo no momento.")
+        return
+    rodada = torneio_data.get("round", 0)
+    pairings = torneio_data.get("pairings", {}).get(f"round_{rodada}", {})
+    if not pairings:
+        await ctx.send(f"🏆 Torneio ativo! Rodada atual: {rodada}\nConfrontos ainda não definidos.")
+        return
+    txt = f"🏆 **Status do Torneio**\nRodada atual: {rodada}\nConfrontos:\n"
+    for p1, p2 in pairings.items():
+        txt += f"<@{p1}> vs <@{p2}>\n"
+    await ctx.send(txt)
+
+@bot.command()
+async def ff(ctx):
+    uid = ctx.author.id
+    if uid not in torneio_data.get("players", []):
+        await ctx.send("❌ Você não está inscrito em nenhum torneio ativo.")
+        return
+    torneio_data["players"].remove(uid)
+    rodada_atual = torneio_data.get("round", 0)
+    for rnd, pairings in torneio_data.get("pairings", {}).items():
+        for p1, p2 in pairings.items():
+            if p1 == uid:
+                pairings[p1] = "BYE"
+            if p2 == uid:
+                pairings[p2] = "BYE"
+    save_json(TORNEIO_FILE, torneio_data)
+    await ctx.send(f"⚠️ <@{uid}> desistiu do torneio. Próximos adversários receberão BYE automaticamente.")
+    await atualizar_painel()
+
 # -----------------------------
-# INÍCIO TORNEIO
+# TORNEIO
 # -----------------------------
 async def iniciar_torneio():
     for uid in torneio_data["players"]:
         try:
-            await bot.fetch_user(uid).send("O torneio começou! Prepare seu deck e aguarde a primeira rodada.")
+            await bot.fetch_user(uid).send("🏁 O torneio começou! Prepare seu deck.")
         except:
             pass
     await atualizar_painel()
@@ -383,12 +424,9 @@ async def on_ready():
     print(f"Bot conectado como {bot.user}")
     asyncio.create_task(atualizar_painel_delay())
 
-    # -----------------------------
-    # SERVIDOR HTTP DUMMY PARA RENDER
-    # -----------------------------
+    # Dummy HTTP server para Render
     async def handle(request):
-        return web.Response(text="Bot está rodando!")
-
+        return web.Response(text="Bot rodando!")
     PORT = int(os.getenv("PORT", 10000))
     app = web.Application()
     app.add_routes([web.get("/", handle)])
