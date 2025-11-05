@@ -1,10 +1,14 @@
 
-OPTCG Discord Bot - ready for GitHub and Render/Replit
+# Bot de Torneio Discord
 
-Files:
-- bot.py
-- requirements.txt
-- .gitignore
-- data/ (initial json files)
+## Estrutura
+- `bot.py` → Arquivo principal do bot (**substitua pelo código completo final**)
+- `data/` → Armazenamento dos arquivos persistentes
+- `requirements.txt` → Dependências
 
-DO NOT COMMIT your token. Use environment variables on the host.
+## Como rodar
+```
+pip install -r requirements.txt
+export DISCORD_TOKEN=SEU_TOKEN
+python bot.py
+```
