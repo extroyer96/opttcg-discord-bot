@@ -1,4 +1,3 @@
-✅ README.md (copie e cole no seu GitHub)
 # OPTTCG Discord Bot 🎮  
 Sistema completo de gerenciamento para competições de One Piece TCG no Discord!
 
