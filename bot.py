@@ -211,13 +211,13 @@ async def on_ready():
     print(f"Bot conectado como {bot.user}")
     await atualizar_painel()
     asyncio.create_task(checar_fila_1x1())
+    save_states.start()  # <-- corrigido: start dentro do on_ready
 
 @tasks.loop(minutes=5)
 async def save_states():
     save_json(RANKING_FILE, ranking)
     save_json(TORNEIO_FILE, torneio_data)
     save_json(HISTORICO_FILE, historico)
-save_states.start()
 
 # -----------------------------
 # COMANDOS BÁSICOS
