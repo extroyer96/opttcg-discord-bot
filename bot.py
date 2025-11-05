@@ -5,10 +5,10 @@ import asyncio, os, json, datetime
 # -----------------------------
 # CONFIGURAÇÕES
 # -----------------------------
-DISCORD_TOKEN = "COLE_SEU_TOKEN_AQUI"  # Substitua pelo token do seu bot
-GUILD_ID = 0
-PANEL_CHANNEL_ID = 0
-BOT_OWNER = 0
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")  # Pega do Environment Variable no Render
+GUILD_ID = int(os.getenv("GUILD_ID", 0))
+PANEL_CHANNEL_ID = int(os.getenv("PANEL_CHANNEL_ID", 0))
+BOT_OWNER = int(os.getenv("BOT_OWNER", 0))
 
 DATA_PATH = "data"
 RANKING_FILE = f"{DATA_PATH}/ranking.json"
@@ -80,11 +80,9 @@ async def atualizar_painel():
 
 # -----------------------------
 # MATCHMAKING, TORNEIO, RESULTADOS
-# (Mantém toda lógica de fila, partidas, torneio suíço,
-#  resultados por DM, cancelamento, ranking, etc.)
 # -----------------------------
-# [Aqui você inclui todo o código de 1x1, torneio, resultados, cancelamento]
-# Para simplificação do exemplo, mantive a estrutura; no bot final, tudo estará incluído.
+# [TODO: incluir toda lógica de matchmaking 1x1, torneio suíço, resultados via DM, cancelamento, ranking, etc.]
+# Aqui você insere o código completo que discutimos antes.  
 
 # -----------------------------
 # EVENTOS
@@ -93,8 +91,8 @@ async def atualizar_painel():
 async def on_ready():
     print(f"Bot conectado como {bot.user}")
     await atualizar_painel()
-    asyncio.create_task(checar_fila_1x1())
-    save_states.start()  # Loop de salvar estados iniciado aqui
+    asyncio.create_task(checar_fila_1x1())  # Loop de fila
+    save_states.start()  # Loop de salvar estados
 
 # -----------------------------
 # LOOP DE SALVAR ESTADOS
@@ -106,7 +104,7 @@ async def save_states():
     save_json(HISTORICO_FILE, historico)
 
 # -----------------------------
-# COMANDOS BÁSICOS
+# COMANDOS
 # -----------------------------
 @bot.command()
 async def novopainel(ctx):
@@ -114,6 +112,9 @@ async def novopainel(ctx):
     PANEL_MESSAGE_ID = 0
     await atualizar_painel()
     await ctx.send("✅ Painel reiniciado!")
+
+# Outros comandos como !torneio, !começartorneio, !statustorneio, !ff, etc.
+# devem ser implementados conforme toda lógica que discutimos.
 
 # -----------------------------
 # EXECUÇÃO
