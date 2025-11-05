@@ -5,7 +5,7 @@ import asyncio, os, json, datetime, math
 # -----------------------------
 # CONFIGURAÇÕES
 # -----------------------------
-DISCORD_TOKEN = "SEU_DISCORD_TOKEN_AQUI"
+DISCORD_TOKEN = "MTQzNTI4MTI1NDE5ODAxODE2MA.G-K8H9.fJGeTaKMyvx__KOoXB1qgSJY8reGexgZScBt9k"
 GUILD_ID = 0
 PANEL_CHANNEL_ID = 0
 BOT_OWNER = 0
