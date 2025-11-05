@@ -1,7 +1,10 @@
 import os
 import discord
 from discord.ext import commands, tasks
-import asyncio, json, datetime
+import asyncio
+import json
+import datetime
+import math
 
 # -----------------------------
 # CONFIGURAÇÕES
@@ -38,15 +41,35 @@ def load_json(file, default):
 # -----------------------------
 # ESTADOS
 # -----------------------------
-ranking = load_json(RANKING_FILE, {"scores": {}, "__last_reset": None})
-torneio_data = load_json(TORNEIO_FILE, {"active": False,"players":[],"decklists":{},"round":0,"pairings":{},"results":{},"scores":{},"played":{},"byes":[],"finished":False,"rounds_target":None,"inscriptions_open":False})
+ranking = load_json(RANKING_FILE, {"scores": {}, "torneio": {}, "__last_reset": None})
+torneio_data = load_json(TORNEIO_FILE, {
+    "active": False,
+    "inscriptions_open": False,
+    "players": [],
+    "decklists": {},
+    "round": 0,
+    "rounds_target": None,
+    "pairings": {},
+    "results": {},
+    "scores": {},
+    "played": {},
+    "byes": [],
+    "finished": False
+})
 historico = load_json(HISTORICO_FILE, [])
 fila = []
 partidas_ativas = {}
 mostrar_inscritos = True
 PANEL_MESSAGE_ID = 0
 
-bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Emojis
+CHECK = "✅"
+X = "❌"
+YES = "➡️"
+NO = "❌"
 
 # -----------------------------
 # PAINEL
@@ -91,6 +114,44 @@ async def save_states():
     save_json(HISTORICO_FILE, historico)
 
 # -----------------------------
+# FUNÇÕES AUXILIARES
+# -----------------------------
+async def checar_fila_1x1():
+    while True:
+        if len(fila) >= 2:
+            p1 = fila.pop(0)
+            p2 = fila.pop(0)
+            match_id = f"{p1}_{p2}_{int(datetime.datetime.now().timestamp())}"
+            partidas_ativas[match_id] = {"player1": p1, "player2": p2, "result": None, "cancel_requested": False}
+            try:
+                await bot.get_user(p1).send(f"⚔️ Você foi emparelhado contra <@{p2}>! Envie o resultado via DM após a partida.")
+                await bot.get_user(p2).send(f"⚔️ Você foi emparelhado contra <@{p1}>! Envie o resultado via DM após a partida.")
+            except:
+                pass
+            await atualizar_painel()
+        await asyncio.sleep(5)
+
+# -----------------------------
+# TORNEIO SUÍÇO - funções
+# -----------------------------
+def calcular_rodadas(num_jogadores):
+    return max(1, math.ceil(math.log2(num_jogadores)))
+
+async def gerar_pairings():
+    jogadores = sorted(torneio_data["players"], key=lambda u: torneio_data["scores"].get(str(u),0), reverse=True)
+    pairings = {}
+    used = set()
+    for i in range(0, len(jogadores)-1, 2):
+        j1, j2 = jogadores[i], jogadores[i+1]
+        pairings[f"{j1}_{j2}"] = {"player1": j1, "player2": j2, "result": None, "cancel_requested": False}
+        used.add(j1)
+        used.add(j2)
+    if len(jogadores) %2 !=0:
+        last = jogadores[-1]
+        torneio_data["byes"].append(last)
+        torneio_data["scores"][str(last)] = torneio_data["scores"].get(str(last),0)+1
+    torneio_data["pairings"] = pairings
+# -----------------------------
 # EVENTOS
 # -----------------------------
 @bot.event
@@ -98,10 +159,28 @@ async def on_ready():
     print(f"Bot conectado como {bot.user}")
     await atualizar_painel()
     save_states.start()
-    asyncio.create_task(checar_fila_1x1())  # Loop de fila 1x1
+    asyncio.create_task(checar_fila_1x1())
+
+@bot.event
+async def on_reaction_add(reaction, user):
+    if user.bot: return
+    if reaction.message.channel.id != PANEL_CHANNEL_ID: return
+
+    if str(reaction.emoji) == CHECK:
+        if user.id not in fila:
+            fila.append(user.id)
+            await user.send("✅ Você entrou na fila 1x1!")
+            await atualizar_painel()
+        await reaction.remove(user)
+    elif str(reaction.emoji) == X:
+        if user.id in fila:
+            fila.remove(user.id)
+            await user.send("❌ Você saiu da fila 1x1!")
+            await atualizar_painel()
+        await reaction.remove(user)
 
 # -----------------------------
-# COMANDOS BÁSICOS
+# COMANDOS
 # -----------------------------
 @bot.command()
 async def novopainel(ctx):
@@ -110,15 +189,45 @@ async def novopainel(ctx):
     await atualizar_painel()
     await ctx.send("✅ Painel reiniciado!")
 
-# -----------------------------
-# TODO: implementar toda lógica de:
-# - Fila 1x1
-# - Torneio suíço
-# - Solicitação de decklist via DM
-# - Cancelamento de partidas
-# - Ranking de torneios
-# - Resultados com confirmação via DM
-# -----------------------------
+@bot.command()
+async def fila(ctx):
+    msg = await ctx.send("Reaja com ✅ para entrar na fila e ❌ para sair da fila.")
+    await msg.add_reaction(CHECK)
+    await msg.add_reaction(X)
+
+@bot.command()
+async def torneio(ctx):
+    if ctx.author.id != BOT_OWNER:
+        await ctx.send("Apenas o dono do bot pode abrir inscrições.")
+        return
+    torneio_data["inscriptions_open"] = True
+    await ctx.send("✅ Torneio aberto para inscrições! Jogadores podem reagir para entrar.")
+
+@bot.command()
+async def começartorneio(ctx):
+    if ctx.author.id != BOT_OWNER:
+        await ctx.send("Apenas o dono do bot pode iniciar o torneio.")
+        return
+    if len(torneio_data["players"])<2:
+        await ctx.send("❌ Não há jogadores suficientes.")
+        return
+    torneio_data["active"] = True
+    torneio_data["rounds_target"] = calcular_rodadas(len(torneio_data["players"]))
+    torneio_data["round"] = 1
+    torneio_data["scores"] = {str(u):0 for u in torneio_data["players"]}
+    await gerar_pairings()
+    await ctx.send(f"🏆 Torneio iniciado com {len(torneio_data['players'])} jogadores, {torneio_data['rounds_target']} rodadas.")
+    await atualizar_painel()
+
+@bot.command()
+async def statustorneio(ctx):
+    if not torneio_data["active"]:
+        await ctx.send("Nenhum torneio ativo.")
+        return
+    txt = f"Rodada {torneio_data['round']}/{torneio_data['rounds_target']}\nConfrontos:\n"
+    for p in torneio_data["pairings"].values():
+        txt+=f"<@{p['player1']}> vs <@{p['player2']}>\n"
+    await ctx.send(txt)
 
 # -----------------------------
 # EXECUÇÃO
