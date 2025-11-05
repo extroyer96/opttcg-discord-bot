@@ -1,11 +1,12 @@
+import os
 import discord
 from discord.ext import commands, tasks
-import asyncio, os, json, datetime
+import asyncio, json, datetime
 
 # -----------------------------
 # CONFIGURAÇÕES
 # -----------------------------
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")  # Pega do Environment Variable no Render
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID", 0))
 PANEL_CHANNEL_ID = int(os.getenv("PANEL_CHANNEL_ID", 0))
 BOT_OWNER = int(os.getenv("BOT_OWNER", 0))
@@ -53,7 +54,9 @@ bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
 async def atualizar_painel():
     global PANEL_MESSAGE_ID
     channel = bot.get_channel(PANEL_CHANNEL_ID)
-    if not channel: return
+    if not channel:
+        print("Canal do painel não encontrado.")
+        return
 
     fila_txt = "\n".join([f"<@{uid}>" for uid in fila]) or "Vazia"
     partidas_txt = "\n".join([f"<@{p['player1']}> vs <@{p['player2']}>" for p in partidas_ativas.values()]) or "Nenhuma"
@@ -79,22 +82,6 @@ async def atualizar_painel():
             PANEL_MESSAGE_ID = msg.id
 
 # -----------------------------
-# MATCHMAKING, TORNEIO, RESULTADOS
-# -----------------------------
-# [TODO: incluir toda lógica de matchmaking 1x1, torneio suíço, resultados via DM, cancelamento, ranking, etc.]
-# Aqui você insere o código completo que discutimos antes.  
-
-# -----------------------------
-# EVENTOS
-# -----------------------------
-@bot.event
-async def on_ready():
-    print(f"Bot conectado como {bot.user}")
-    await atualizar_painel()
-    asyncio.create_task(checar_fila_1x1())  # Loop de fila
-    save_states.start()  # Loop de salvar estados
-
-# -----------------------------
 # LOOP DE SALVAR ESTADOS
 # -----------------------------
 @tasks.loop(minutes=5)
@@ -104,7 +91,17 @@ async def save_states():
     save_json(HISTORICO_FILE, historico)
 
 # -----------------------------
-# COMANDOS
+# EVENTOS
+# -----------------------------
+@bot.event
+async def on_ready():
+    print(f"Bot conectado como {bot.user}")
+    await atualizar_painel()
+    save_states.start()
+    asyncio.create_task(checar_fila_1x1())  # Loop de fila 1x1
+
+# -----------------------------
+# COMANDOS BÁSICOS
 # -----------------------------
 @bot.command()
 async def novopainel(ctx):
@@ -113,10 +110,20 @@ async def novopainel(ctx):
     await atualizar_painel()
     await ctx.send("✅ Painel reiniciado!")
 
-# Outros comandos como !torneio, !começartorneio, !statustorneio, !ff, etc.
-# devem ser implementados conforme toda lógica que discutimos.
+# -----------------------------
+# TODO: implementar toda lógica de:
+# - Fila 1x1
+# - Torneio suíço
+# - Solicitação de decklist via DM
+# - Cancelamento de partidas
+# - Ranking de torneios
+# - Resultados com confirmação via DM
+# -----------------------------
 
 # -----------------------------
 # EXECUÇÃO
 # -----------------------------
-bot.run(DISCORD_TOKEN)
+if not DISCORD_TOKEN:
+    print("⚠️ DISCORD_TOKEN não encontrado nas variáveis de ambiente!")
+else:
+    bot.run(DISCORD_TOKEN)
