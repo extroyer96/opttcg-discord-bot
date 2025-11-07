@@ -1,6 +1,10 @@
-# bot.py — OPTCG Sorocaba — Versão final integrada
-# Requisitos: discord.py>=2.4.0, aiohttp, colorama, python-dotenv (opcional)
-# Variáveis de ambiente: DISCORD_TOKEN, GUILD_ID, PANEL_CHANNEL_ID, BOT_OWNER, PORT (opcional)
+# bot.py — OPTCG Sorocaba — Versão final (Painel estilo A: azul + dourado)
+# Requisitos:
+# discord.py==2.4.0
+# aiohttp==3.8.5
+# python-dotenv==1.0.1
+# colorama==0.4.6
+# pytz==2024.1
 
 import os
 import json
@@ -15,7 +19,7 @@ from discord.ext import commands, tasks
 from aiohttp import web
 from colorama import init as colorama_init, Fore
 
-# load .env optionally
+# optional dotenv
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -65,22 +69,23 @@ torneio_data = load_json(TORNEIO_FILE, {
     "active": False,
     "inscriptions_open": False,
     "players": [],
-    "decklists": {},       # str(uid) -> text
-    "deck_confirmed": {},  # str(uid) -> bool
+    "decklists": {},
+    "deck_confirmed": {},
     "round": 0,
     "rounds_target": None,
-    "pairings": {},        # match_id -> pairing
+    "pairings": {},
     "scores": {},
     "played": {},
     "byes": [],
     "finished": False,
-    "inscription_message_id": 0
+    "inscription_message_id": 0,
+    "tournament_champions": {}
 })
 historico = load_json(HISTORICO_FILE, [])
 
-fila = []  # list of user ids
-partidas_ativas = {}  # match_id -> dict
-poll_message_map = {}  # message_id -> (match_id, user_id) to track DM polls
+fila = []
+partidas_ativas = {}
+poll_message_map = {}
 PANEL_MESSAGE_ID = 0
 mostrar_inscritos = True
 
@@ -88,14 +93,14 @@ mostrar_inscritos = True
 intents = discord.Intents.default()
 intents.message_content = True
 intents.reactions = True
-intents.members = True  # enable in dev portal
+intents.members = True
 
 class TournamentBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents, help_command=None)
 
     async def setup_hook(self):
-        # start tasks safely
+        # start webserver and tasks
         asyncio.create_task(start_webserver())
         if not save_states.is_running():
             save_states.start()
@@ -130,7 +135,7 @@ async def safe_fetch_user(uid: int) -> Optional[discord.User]:
 def now_iso():
     return datetime.datetime.utcnow().isoformat()
 
-# ---------------- WEB SERVER (keep-alive for Render) ----------------
+# ---------------- WEB SERVER (keepalive) ----------------
 async def _handle_root(request):
     return web.Response(text="OPTCG Sorocaba Bot — running")
 
@@ -142,34 +147,38 @@ async def start_webserver():
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", PORT)
         await site.start()
-        print(Fore.CYAN + f"[WEB] keep-alive server listening on 0.0.0.0:{PORT}")
+        print(Fore.CYAN + f"[WEB] listening on 0.0.0.0:{PORT}")
     except Exception as e:
-        print(Fore.RED + f"[WEB] failed to start: {e}")
+        print(Fore.RED + f"[WEB] failed: {e}")
 
-# ---------------- PANEL (Embed style 1) ----------------
+# ---------------- PANEL (Embed style A: azul + dourado) ----------------
 def build_panel_embed():
+    # colors: blue and gold accents
     embed = discord.Embed(title="🎮 OPTCG Sorocaba — Painel Geral 🎮",
-                          description="Painel de filas, partidas e torneios",
-                          color=0x1abc9c,
+                          description="Painel interativo — fila, partidas e torneio",
+                          color=0x1e90ff,
                           timestamp=datetime.datetime.utcnow())
+    # header field with gold accent via emoji
+    embed.add_field(name="🏴‍☠️ Status geral", value=f"**Torneio ativo:** {torneio_data.get('active')}\n**Rodada:** {torneio_data.get('round')}/{torneio_data.get('rounds_target') or '-'}", inline=False)
+
     # Fila
     if fila:
-        fila_text = "\n".join([f"• <@{u}>" for u in fila])
+        fila_text = "\n".join([f"• <@{u}>" for u in fila[:30]])
     else:
         fila_text = "Vazia"
     embed.add_field(name="🟦 Fila 1x1", value=fila_text, inline=False)
 
     # Partidas
     if partidas_ativas:
-        part_lines = []
+        lines = []
         for mid, p in list(partidas_ativas.items())[:12]:
-            part_lines.append(f"• <@{p['player1']}> vs <@{p['player2']}>")
-        partidas_text = "\n".join(part_lines)
+            lines.append(f"• <@{p['player1']}> vs <@{p['player2']}>")
+        partidas_text = "\n".join(lines)
     else:
         partidas_text = "Nenhuma"
     embed.add_field(name="🟥 Partidas em andamento", value=partidas_text, inline=False)
 
-    # Últimas 3 partidas
+    # Ultimas 3
     if historico:
         last = historico[-3:]
         last_lines = []
@@ -183,7 +192,7 @@ def build_panel_embed():
         ult_text = "Nenhuma"
     embed.add_field(name="🟩 Últimas 3 partidas", value=ult_text, inline=False)
 
-    # Inscritos (toggle)
+    # Inscritos
     if mostrar_inscritos and torneio_data.get("players"):
         ins_lines = [f"• <@{u}>" for u in torneio_data.get("players", [])[:30]]
         inscritos_text = "\n".join(ins_lines)
@@ -196,13 +205,13 @@ def build_panel_embed():
 
 async def atualizar_painel():
     global PANEL_MESSAGE_ID
+    if PANEL_CHANNEL_ID == 0:
+        return
+    ch = bot.get_channel(PANEL_CHANNEL_ID)
+    if not ch:
+        return
+    embed = build_panel_embed()
     try:
-        if PANEL_CHANNEL_ID == 0:
-            return
-        ch = bot.get_channel(PANEL_CHANNEL_ID)
-        if not ch:
-            return
-        embed = build_panel_embed()
         if PANEL_MESSAGE_ID == 0:
             msg = await ch.send(embed=embed)
             PANEL_MESSAGE_ID = msg.id
@@ -230,9 +239,9 @@ async def atualizar_painel():
                 except:
                     pass
     except Exception as e:
-        print(Fore.RED + f"[PAINEL] erro ao atualizar: {e}")
+        print(Fore.RED + f"[PAINEL] erro: {e}")
 
-# ---------------- PERSIST / PERIODIC TASKS ----------------
+# ---------------- PERSIST / TASKS ----------------
 @tasks.loop(minutes=5)
 async def save_states():
     save_json(RANKING_FILE, ranking)
@@ -271,12 +280,12 @@ async def fila_worker():
                     "cancel_attempts": {},
                     "source": "fila",
                     "timestamp": now_iso(),
-                    "polls": []  # list of (user_id, message_id)
+                    "polls": []
                 }
                 await send_result_poll(match_id, partidas_ativas[match_id])
                 await atualizar_painel()
         except Exception as e:
-            print(Fore.RED + f"[FILA WORKER] erro: {e}")
+            print(Fore.RED + f"[FILA WORKER] {e}")
         await asyncio.sleep(3)
 
 # ---------------- TORNEIO SUÍÇO ----------------
@@ -297,18 +306,11 @@ async def gerar_pairings_torneio():
     pairings = {}
     i = 0
     while i < len(sorted_players) - 1:
-        p1 = sorted_players[i]
-        p2 = sorted_players[i+1]
+        p1 = sorted_players[i]; p2 = sorted_players[i+1]
         pid = f"tor_{p1}_{p2}_{int(datetime.datetime.utcnow().timestamp())}"
         pairings[pid] = {
-            "player1": p1,
-            "player2": p2,
-            "attempts": {},
-            "cancel_attempts": {},
-            "result": None,
-            "round": torneio_data.get("round", 1),
-            "source": "torneio",
-            "polls": []
+            "player1": p1, "player2": p2, "attempts": {}, "cancel_attempts": {}, "result": None,
+            "round": torneio_data.get("round", 1), "source": "torneio", "polls": []
         }
         i += 2
     if len(sorted_players) % 2 == 1:
@@ -321,12 +323,11 @@ async def gerar_pairings_torneio():
 async def dm_pairings_round():
     for pid, pairing in torneio_data.get("pairings", {}).items():
         p1 = pairing["player1"]; p2 = pairing["player2"]
-        # send short DM then poll
         for uid in (p1, p2):
             u = await safe_fetch_user(uid)
             if u:
                 try:
-                    await u.send(f"🏁 Rodada {torneio_data.get('round',1)} — Confronto: <@{p1}> vs <@{p2}>\nReportar resultado reagindo à mensagem que eu enviei (1️⃣=player1, 2️⃣=player2, ➖=empate).")
+                    await u.send(f"🏁 Rodada {torneio_data.get('round',1)} — Confronto: <@{p1}> vs <@{p2}>\nReportar resultado reagindo (1️⃣/2️⃣/➖).")
                 except:
                     pass
         await send_result_poll(pid, pairing)
@@ -354,105 +355,87 @@ async def send_result_poll(match_id: str, partida: dict):
                 await msg.add_reaction(EMOJI_TIE)
             except:
                 pass
-            # track poll message
             partida.setdefault("polls", []).append((uid, msg.id))
             poll_message_map[msg.id] = (match_id, uid)
-        except Exception:
+        except:
             pass
 
-# ---------------- ON_MESSAGE (decklist capture + confirmation) ----------------
-async def validate_decklist_text(text: str) -> bool:
-    """
-    Parse decklist lines like '4xOP13-113' or '4 x OP13-113' or '4x OP13-113'
-    Sum numbers before 'x' and return True if total == 51.
-    """
+# ---------------- DECKLIST VALIDATION & DM HANDLING ----------------
+async def validate_decklist_text(text: str) -> (bool, int):
     total = 0
     for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
-        # find number before 'x'
-        # allow formats: '4xID', '4 xID', '4 x ID', etc.
         parts = line.split('x', 1)
         if len(parts) < 2:
             parts = line.split('X', 1)
             if len(parts) < 2:
-                # try space-separated first token
+                # try first token
                 tok = line.split()[0]
                 try:
                     n = int(tok)
                     total += n
                     continue
                 except:
-                    # invalid line — consider as 0
-                    continue
+                    return False, total
         try:
             n = int(parts[0].strip())
             total += n
         except:
-            # attempt to extract leading digits
-            s = parts[0].strip()
+            # try leading digits
             digits = ''
-            for ch in s:
+            for ch in parts[0]:
                 if ch.isdigit():
                     digits += ch
                 else:
                     break
-            try:
-                if digits:
-                    total += int(digits)
-            except:
-                pass
-    return total == 51
+            if digits:
+                total += int(digits)
+            else:
+                return False, total
+    return (total == 51), total
 
 @bot.event
 async def on_message(message):
     if message.author.bot:
         return
 
-    # DM decklist capture + confirmation flow
+    # DM flow for decklist
     if isinstance(message.channel, discord.DMChannel):
         uid = message.author.id
         if uid in torneio_data.get("players", []):
-            # if no decklist or not confirmed, accept new decklist text
-            # store but ask confirmation
-            text = message.content.strip()
-            if not text:
-                return
-            # validate count
-            ok = await validate_decklist_text(text)
+            deck_text = message.content.strip()
+            ok, total = await validate_decklist_text(deck_text)
             if not ok:
                 try:
-                    await message.author.send("❌ Decklist inválida: a soma das quantidades não resulta em 51 cartas. Por favor envie novamente no formato `NxCARDID` (ex: `4xOP13-113`).")
+                    await message.author.send(f"⚠️ Deck inválido: total encontrado = {total}. O deck precisa ter exatamente 51 cartas. Envie novamente no formato `4xOP13-113` por linha.")
                 except:
                     pass
                 return
-            # save decklist draft and ask confirm
-            torneio_data.setdefault("decklists", {})[str(uid)] = text
-            torneio_data.setdefault("deck_confirmed", {})[str(uid)] = False
-            save_json(TORNEIO_FILE, torneio_data)
+            # ask confirmation via reaction
             try:
-                confirm_msg = await message.author.send("✅ Decklist recebida. Confirma esta decklist? Reaja com ✅ para confirmar ou ❌ para reenviar.")
-                try:
-                    await confirm_msg.add_reaction(EMOJI_CONFIRM)
-                    await confirm_msg.add_reaction(EMOJI_DENY)
-                except:
-                    pass
-                # track confirm message
+                confirm_msg = await message.author.send("📋 Decklist recebida. Confirma esta decklist? Reaja ✅ para confirmar ou ❌ para reenviar.")
+                await confirm_msg.add_reaction(EMOJI_CONFIRM)
+                await confirm_msg.add_reaction(EMOJI_DENY)
                 poll_message_map[confirm_msg.id] = ("deck_confirm", uid)
             except:
                 pass
+            # store draft
+            torneio_data.setdefault("decklists", {})[str(uid)] = deck_text
+            torneio_data.setdefault("deck_confirmed", {})[str(uid)] = False
+            save_json(TORNEIO_FILE, torneio_data)
             return
 
     await bot.process_commands(message)
 
-# ---------------- REACTION HANDLER (panel + inscription + polls + deck confirmations + ranking) ----------------
+# ---------------- REACTIONS HANDLER ----------------
 @bot.event
 async def on_reaction_add(reaction, user):
     if user.bot:
         return
+    # Panel reactions
     try:
-        # Panel reactions (enter/leave/show/hide/ranking)
         if reaction.message.id == PANEL_MESSAGE_ID:
             emoji = str(reaction.emoji)
             if emoji == EMOJI_CHECK:
@@ -475,7 +458,6 @@ async def on_reaction_add(reaction, user):
                 mostrar_inscritos = False
                 await atualizar_painel()
             elif emoji == EMOJI_RANK:
-                # trigger DM ranking same as !verranking
                 await send_ranking_dm(user.id)
             try:
                 await reaction.remove(user)
@@ -484,7 +466,7 @@ async def on_reaction_add(reaction, user):
     except Exception:
         pass
 
-    # Tournament inscription reaction
+    # inscription reaction
     try:
         if torneio_data.get("inscription_message_id") and reaction.message.id == torneio_data.get("inscription_message_id"):
             if str(reaction.emoji) == EMOJI_TROPHY and torneio_data.get("inscriptions_open"):
@@ -493,10 +475,8 @@ async def on_reaction_add(reaction, user):
                     torneio_data["decklists"].pop(str(user.id), None)
                     torneio_data.setdefault("deck_confirmed", {})[str(user.id)] = False
                     save_json(TORNEIO_FILE, torneio_data)
-                    try:
-                        await user.send("✅ Inscrição recebida! Você receberá uma DM solicitando sua decklist quando o torneio for iniciado.")
-                    except:
-                        pass
+                    try: await user.send("✅ Inscrição recebida! Quando o admin solicitar decklists, você será avisado por DM.")
+                    except: pass
                     await atualizar_painel()
                 try:
                     await reaction.remove(user)
@@ -505,16 +485,14 @@ async def on_reaction_add(reaction, user):
     except Exception:
         pass
 
-    # Decklist confirmation reaction handling
+    # deck confirm reaction
     try:
         mid = reaction.message.id
         if mid in poll_message_map:
             key = poll_message_map[mid]
-            # deck confirm messages stored with ("deck_confirm", uid)
             if isinstance(key, tuple) and key[0] == "deck_confirm":
                 _, uid = key
                 if user.id != uid:
-                    # ignore reactions by others
                     try: await reaction.remove(user)
                     except: pass
                     return
@@ -522,40 +500,30 @@ async def on_reaction_add(reaction, user):
                 if emoji == EMOJI_CONFIRM:
                     torneio_data.setdefault("deck_confirmed", {})[str(uid)] = True
                     save_json(TORNEIO_FILE, torneio_data)
-                    try:
-                        await user.send("✅ Deck confirmado! Aguarde os demais jogadores.")
-                    except:
-                        pass
+                    try: await user.send("✅ Decklist confirmada. Aguarde os demais jogadores.")
+                    except: pass
                 elif emoji == EMOJI_DENY:
                     torneio_data.setdefault("deck_confirmed", {})[str(uid)] = False
                     torneio_data.setdefault("decklists", {}).pop(str(uid), None)
                     save_json(TORNEIO_FILE, torneio_data)
-                    try:
-                        await user.send("✏️ Ok, por favor envie novamente a sua decklist (cole aqui).")
-                    except:
-                        pass
-                try:
-                    await reaction.remove(user)
-                except:
-                    pass
-                # check if all confirmed now and auto-start if so (only if admin hasn't chosen otherwise)
+                    try: await user.send("🔁 Ok. Envie novamente sua decklist no formato correto.")
+                    except: pass
+                try: await reaction.remove(user)
+                except: pass
                 await check_all_decks_confirmed_and_maybe_start()
                 return
     except Exception as e:
         print(Fore.RED + f"[DECK CONFIRM] {e}")
 
-    # Poll reactions (1/2/➖) — match result
+    # poll reaction (match result)
     try:
         emoji = str(reaction.emoji)
         if emoji in (EMOJI_ONE, EMOJI_TWO, EMOJI_TIE):
             msg_id = reaction.message.id
-            # we mapped poll messages in poll_message_map
             if msg_id in poll_message_map:
                 match_id, uid = poll_message_map[msg_id]
-                # find the match (in partidas_ativas or torneio pairings)
                 if match_id in partidas_ativas:
                     p = partidas_ativas[match_id]
-                    # ensure the reacting user is the owner of the DM poll (uid)
                     if user.id != uid:
                         try: await reaction.remove(user)
                         except: pass
@@ -572,14 +540,12 @@ async def on_reaction_add(reaction, user):
                     p.setdefault("attempts", {})[str(user.id)] = emoji
                     torneio_data["pairings"][match_id] = p
                     await check_and_process_torneio_result(match_id, p)
-                try:
-                    await reaction.remove(user)
-                except:
-                    pass
+                try: await reaction.remove(user)
+                except: pass
     except Exception as e:
         print(Fore.RED + f"[POLL REACT] {e}")
 
-# ---------------- CHECK & PROCESS RESULT ----------------
+# ---------------- PROCESS RESULT ----------------
 async def check_and_process_match_result(match_id: str, partida: dict):
     try:
         attempts = partida.get("attempts", {})
@@ -589,14 +555,11 @@ async def check_and_process_match_result(match_id: str, partida: dict):
             if c1 == c2:
                 await finalize_match_result(match_id, partida, c1)
             else:
-                # disagreement
                 u1 = await safe_fetch_user(p1); u2 = await safe_fetch_user(p2)
                 for u in (u1, u2):
                     if u:
-                        try:
-                            await u.send("⚠️ Relatórios divergentes — conversem e reaja novamente na mensagem de DM.")
-                        except:
-                            pass
+                        try: await u.send("⚠️ Relatórios divergentes. Conversem e reagam novamente na mesma opção.")
+                        except: pass
     except Exception as e:
         print(Fore.RED + f"[CHECK MATCH] {e}")
 
@@ -612,14 +575,11 @@ async def check_and_process_torneio_result(match_id: str, partida: dict):
                 u1 = await safe_fetch_user(p1); u2 = await safe_fetch_user(p2)
                 for u in (u1, u2):
                     if u:
-                        try:
-                            await u.send("⚠️ Relatórios divergentes — conversem e reaja novamente na mensagem de DM.")
-                        except:
-                            pass
+                        try: await u.send("⚠️ Relatórios divergentes. Conversem e reagam novamente na mesma opção.")
+                        except: pass
     except Exception as e:
         print(Fore.RED + f"[CHECK TORNEIO] {e}")
 
-# ---------------- FINALIZE RESULT ----------------
 async def finalize_match_result(match_id: str, partida: dict, emoji_choice: str):
     try:
         p1 = partida["player1"]; p2 = partida["player2"]
@@ -663,7 +623,6 @@ async def finalize_torneio_result(match_id: str, partida: dict, emoji_choice: st
             torneio_data.setdefault("scores", {})[str(winner)] = torneio_data.get("scores", {}).get(str(winner), 0) + 1
         else:
             historico.append({"winner": None, "loser": None, "timestamp": ts, "match_id": match_id, "source": "torneio", "tie": True})
-        # remove pairing to free for next round
         torneio_data.get("pairings", {}).pop(match_id, None)
         save_json(TORNEIO_FILE, torneio_data)
         save_json(HISTORICO_FILE, historico)
@@ -679,18 +638,16 @@ async def finalize_torneio_result(match_id: str, partida: dict, emoji_choice: st
 
 # ---------------- CHECK ALL DECKS CONFIRMED & MAYBE START ----------------
 async def check_all_decks_confirmed_and_maybe_start():
-    # if tournament active but not started rounds: only start round1 when all confirmed
     if not torneio_data.get("inscriptions_open") and torneio_data.get("players") and not torneio_data.get("active"):
         players = torneio_data.get("players", [])
         confirmed_map = torneio_data.get("deck_confirmed", {})
-        # if any player hasn't submitted decklist or not confirmed, do nothing
         all_confirmed = True
         for uid in players:
             if str(uid) not in torneio_data.get("decklists", {}) or not confirmed_map.get(str(uid), False):
                 all_confirmed = False
                 break
         if all_confirmed:
-            # compile decklists to file and send to owner
+            # create combined decklist file and send to owner
             combined = []
             for uid in players:
                 dl = torneio_data["decklists"].get(str(uid), "")
@@ -704,13 +661,13 @@ async def check_all_decks_confirmed_and_maybe_start():
             owner = await safe_fetch_user(BOT_OWNER)
             if owner:
                 try:
-                    await owner.send("📦 Todas as decklists confirmadas — arquivo em anexo:", file=discord.File(str(combined_path)))
+                    await owner.send("📦 Todas as decklists recebidas — arquivo em anexo:", file=discord.File(str(combined_path)))
                 except:
                     try:
-                        await owner.send("Todas as decklists confirmadas — (falha ao enviar arquivo).")
+                        await owner.send("Todas as decklists recebidas — (falha ao enviar arquivo).")
                     except:
                         pass
-            # start first round
+            # start tournament
             torneio_data["active"] = True
             torneio_data["rounds_target"] = calcular_rodadas(len(players))
             torneio_data["round"] = 1
@@ -719,22 +676,49 @@ async def check_all_decks_confirmed_and_maybe_start():
             torneio_data["played"] = {str(u): [] for u in players}
             await gerar_pairings_torneio()
             save_json(TORNEIO_FILE, torneio_data)
-            # DM pairings
             await dm_pairings_round()
-            # announce in panel channel
             ch = bot.get_channel(PANEL_CHANNEL_ID)
             if ch:
-                try:
-                    await ch.send(f"🏁 Torneio iniciado automaticamente — rodadas: {torneio_data['rounds_target']}.")
-                except:
-                    pass
+                try: await ch.send(f"🏁 Torneio iniciado automaticamente — rodadas: {torneio_data['rounds_target']}.")
+                except: pass
             await atualizar_painel()
 
-# ---------------- COMMANDS: CANCEL/TORNEIO/ADMIN ----------------
+# ---------------- COMMANDS ----------------
+@bot.command(name="novopainel")
+async def cmd_novopainel(ctx):
+    if ctx.author.id != BOT_OWNER:
+        try:
+            await ctx.message.delete()
+        except:
+            pass
+        await ctx.send("❌ Apenas o dono do bot pode usar este comando.", delete_after=5)
+        return
+    global PANEL_MESSAGE_ID
+    ch = bot.get_channel(PANEL_CHANNEL_ID)
+    if not ch:
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Canal do painel não encontrado.", delete_after=5)
+        return
+    # delete only bot messages in channel (limit recent 200)
+    async for msg in ch.history(limit=200):
+        if msg.author == bot.user:
+            try: await msg.delete()
+            except: pass
+    PANEL_MESSAGE_ID = 0
+    await atualizar_painel()
+    try:
+        await ctx.send("✅ Painel recriado com sucesso.", delete_after=5)
+        await ctx.message.delete()
+    except:
+        pass
+
 @bot.command(name="torneio")
 async def cmd_torneio_open(ctx):
     if ctx.author.id != BOT_OWNER:
-        await ctx.send("❌ Apenas o dono pode abrir inscrições.")
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Apenas o dono pode abrir inscrições.", delete_after=5)
         return
     torneio_data["inscriptions_open"] = True
     torneio_data["players"] = []
@@ -742,76 +726,71 @@ async def cmd_torneio_open(ctx):
     torneio_data["deck_confirmed"] = {}
     torneio_data["inscription_message_id"] = 0
     msg = await ctx.send("🏆 **TORNEIO ABERTO** — Reaja com 🏆 para se inscrever. Você receberá DM solicitando decklist quando o admin iniciar.")
-    try:
-        await msg.add_reaction(EMOJI_TROPHY)
-    except:
-        pass
+    try: await msg.add_reaction(EMOJI_TROPHY)
+    except: pass
     torneio_data["inscription_message_id"] = msg.id
     save_json(TORNEIO_FILE, torneio_data)
-    await ctx.send("✅ Torneio aberto — mensagem criada.")
     await atualizar_painel()
+    try: await ctx.message.delete()
+    except: pass
 
 @bot.command(name="fecharinscricoes")
 async def cmd_fecharinscricoes(ctx):
     if ctx.author.id != BOT_OWNER:
-        await ctx.send("❌ Apenas o dono pode fechar inscrições.")
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Apenas o dono pode fechar inscrições.", delete_after=5)
         return
     torneio_data["inscriptions_open"] = False
     save_json(TORNEIO_FILE, torneio_data)
-    await ctx.send(f"🔒 Inscrições fechadas. Jogadores inscritos: {len(torneio_data.get('players', []))}")
+    await ctx.send(f"🔒 Inscrições fechadas. Jogadores inscritos: {len(torneio_data.get('players', []))}", delete_after=8)
     await atualizar_painel()
+    try: await ctx.message.delete()
+    except: pass
 
 @bot.command(name="começartorneio")
 async def cmd_comecar_torneio(ctx):
     if ctx.author.id != BOT_OWNER:
-        await ctx.send("❌ Apenas o dono pode iniciar o processo de decklists.")
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Apenas o dono pode iniciar o processo de decklists.", delete_after=5)
         return
     players = torneio_data.get("players", [])
     if len(players) < 2:
-        await ctx.send("❌ Jogadores insuficientes (mínimo 2).")
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Jogadores insuficientes (mínimo 2).", delete_after=5)
         return
-    # Close inscriptions and request decklists via DM for all players
     torneio_data["inscriptions_open"] = False
-    torneio_data["decklists"] = torneio_data.get("decklists", {})  # keep any existing
-    torneio_data["deck_confirmed"] = torneio_data.get("deck_confirmed", {})
     save_json(TORNEIO_FILE, torneio_data)
-    # DM each player asking decklist or confirmation
     for uid in players:
         u = await safe_fetch_user(uid)
         if not u:
             continue
-        # if player already submitted decklist and not confirmed, ask to confirm
         if str(uid) in torneio_data.get("decklists", {}) and torneio_data.get("deck_confirmed", {}).get(str(uid), False):
-            # already confirmed
-            try:
-                await u.send("🔔 Você já confirmou sua decklist. Aguarde os demais jogadores.")
-            except:
-                pass
+            try: await u.send("🔔 Você já confirmou sua decklist. Aguarde os demais jogadores.")
+            except: pass
         elif str(uid) in torneio_data.get("decklists", {}):
-            # ask to confirm
             try:
-                msg = await u.send("✅ Decklist já recebida. Confirma esta decklist? Reaja com ✅ para confirmar ou ❌ para reenviar.")
-                try:
-                    await msg.add_reaction(EMOJI_CONFIRM)
-                    await msg.add_reaction(EMOJI_DENY)
-                except:
-                    pass
+                msg = await u.send("✅ Decklist já recebida. Confirma esta decklist? Reaja ✅ para confirmar ou ❌ para reenviar.")
+                await msg.add_reaction(EMOJI_CONFIRM); await msg.add_reaction(EMOJI_DENY)
                 poll_message_map[msg.id] = ("deck_confirm", uid)
-            except:
-                pass
+            except: pass
         else:
-            # ask to send decklist
             try:
-                await u.send("✏️ Por favor envie sua decklist aqui (formato ex: `4xOP13-113`). O bot validará se totaliza 51 cartas e pedirá confirmação.")
-            except:
-                pass
-    await ctx.send("📨 Solicitações de decklist enviadas por DM. O torneio começará automaticamente quando todos confirmarem, ou o admin pode remover jogadores / forçar início.")
+                await u.send("✏️ Envie sua decklist aqui (formato ex: `4xOP13-113`) — o bot validará se totaliza 51 cartas e pedirá confirmação.")
+            except: pass
+    await ctx.send("📨 Solicitações de decklist enviadas por DM. O torneio só iniciará quando todos confirmarem, ou o admin pode forçar.", delete_after=8)
     await atualizar_painel()
+    try: await ctx.message.delete()
+    except: pass
 
 @bot.command(name="removerjogador")
 async def cmd_remover_jogador(ctx, member: discord.Member):
     if ctx.author.id != BOT_OWNER:
-        await ctx.send("❌ Apenas o dono pode remover jogadores.")
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Apenas o dono pode remover jogadores.", delete_after=5)
         return
     uid = member.id
     if uid in torneio_data.get("players", []):
@@ -819,21 +798,26 @@ async def cmd_remover_jogador(ctx, member: discord.Member):
         torneio_data.get("decklists", {}).pop(str(uid), None)
         torneio_data.get("deck_confirmed", {}).pop(str(uid), None)
         save_json(TORNEIO_FILE, torneio_data)
-        await ctx.send(f"✅ Jogador <@{uid}> removido do torneio.")
+        await ctx.send(f"✅ Jogador <@{uid}> removido do torneio.", delete_after=6)
         await atualizar_painel()
     else:
-        await ctx.send("❌ Jogador não está inscrito.")
+        await ctx.send("❌ Jogador não está inscrito.", delete_after=5)
+    try: await ctx.message.delete()
+    except: pass
 
 @bot.command(name="forçarrodada")
 async def cmd_forcar_rodada(ctx):
     if ctx.author.id != BOT_OWNER:
-        await ctx.send("❌ Apenas o dono pode forçar o início.")
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Apenas o dono pode forçar o início.", delete_after=5)
         return
     players = torneio_data.get("players", [])
     if not players:
-        await ctx.send("❌ Nenhum inscrito.")
+        await ctx.send("❌ Nenhum inscrito.", delete_after=5)
+        try: await ctx.message.delete()
+        except: pass
         return
-    # force start regardless of deck confirmations
     torneio_data["active"] = True
     torneio_data["rounds_target"] = calcular_rodadas(len(players))
     torneio_data["round"] = torneio_data.get("round", 1)
@@ -843,52 +827,50 @@ async def cmd_forcar_rodada(ctx):
     await gerar_pairings_torneio()
     save_json(TORNEIO_FILE, torneio_data)
     await dm_pairings_round()
-    await ctx.send("⚠️ Inicio forçado: rodada iniciada apesar de decklists pendentes.")
+    await ctx.send("⚠️ Início forçado: rodada iniciada apesar de decklists pendentes.", delete_after=8)
     await atualizar_painel()
+    try: await ctx.message.delete()
+    except: pass
 
 @bot.command(name="cancelartorneio")
 async def cmd_cancelar_torneio(ctx):
     if ctx.author.id != BOT_OWNER:
-        await ctx.send("❌ Apenas o dono pode cancelar o torneio.")
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Apenas o dono pode cancelar o torneio.", delete_after=5)
         return
-    # reset torneio without champion
     torneio_data.update({
-        "active": False,
-        "inscriptions_open": False,
-        "players": [],
-        "decklists": {},
-        "deck_confirmed": {},
-        "round": 0,
-        "rounds_target": None,
-        "pairings": {},
-        "scores": {},
-        "played": {},
-        "byes": [],
-        "finished": False,
-        "inscription_message_id": 0
+        "active": False, "inscriptions_open": False, "players": [], "decklists": {},
+        "deck_confirmed": {}, "round": 0, "rounds_target": None, "pairings": {},
+        "scores": {}, "played": {}, "byes": [], "finished": False, "inscription_message_id": 0
     })
     save_json(TORNEIO_FILE, torneio_data)
-    await ctx.send("✅ Torneio cancelado e resetado (nenhum campeão registrado).")
+    await ctx.send("✅ Torneio cancelado e resetado (nenhum campeão registrado).", delete_after=8)
     await atualizar_painel()
+    try: await ctx.message.delete()
+    except: pass
 
 @bot.command(name="encerrar")
 async def cmd_encerrar(ctx):
     if ctx.author.id != BOT_OWNER:
-        await ctx.send("❌ Apenas o dono pode encerrar o torneio.")
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Apenas o dono pode encerrar o torneio.", delete_after=5)
         return
     if not torneio_data.get("active"):
-        await ctx.send("❌ Nenhum torneio ativo.")
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Nenhum torneio ativo.", delete_after=5)
         return
-    # declare champion by current scores
     scores = torneio_data.get("scores", {})
     if not scores:
-        await ctx.send("❌ Nenhum resultado registrado ainda.")
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Nenhum resultado registrado.", delete_after=5)
         return
     champ_id, champ_score = max(scores.items(), key=lambda kv: kv[1])
-    # update champions ranking
     torneio_data.setdefault("tournament_champions", {})[str(champ_id)] = torneio_data.get("tournament_champions", {}).get(str(champ_id), 0) + 1
     ranking.setdefault("scores_torneio", {})[str(champ_id)] = ranking.get("scores_torneio", {}).get(str(champ_id), 0) + 1
-    # finalize
     torneio_data["active"] = False
     torneio_data["finished"] = True
     save_json(RANKING_FILE, ranking)
@@ -898,160 +880,109 @@ async def cmd_encerrar(ctx):
         await ch.send(f"🏆 Torneio encerrado pelo admin. Campeão: <@{champ_id}> com {champ_score} pontos. Parabéns!")
     owner = await safe_fetch_user(BOT_OWNER)
     if owner:
-        try:
-            await owner.send(f"🏆 Torneio encerrado. Campeão: <@{champ_id}> — {champ_score} pts.")
-        except:
-            pass
+        try: await owner.send(f"🏆 Torneio encerrado. Campeão: <@{champ_id}> — {champ_score} pts.")
+        except: pass
     await atualizar_painel()
+    try: await ctx.message.delete()
+    except: pass
+
+@bot.command(name="proximarodada")
+async def cmd_proxima_rodada(ctx):
+    if ctx.author.id != BOT_OWNER:
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Apenas o dono pode avançar rodadas.", delete_after=5)
+        return
+    if not torneio_data.get("active"):
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Nenhum torneio ativo.", delete_after=5)
+        return
+    if torneio_data.get("round", 0) >= torneio_data.get("rounds_target", 0):
+        torneio_data["active"] = False
+        torneio_data["finished"] = True
+        scores = torneio_data.get("scores", {})
+        if scores:
+            champion_id, champ_score = max(scores.items(), key=lambda kv: kv[1])
+            torneio_data.setdefault("tournament_champions", {})[str(champion_id)] = torneio_data.get("tournament_champions", {}).get(str(champion_id), 0) + 1
+            ranking.setdefault("scores_torneio", {})[str(champion_id)] = ranking.get("scores_torneio", {}).get(str(champion_id), 0) + 1
+            ch = bot.get_channel(PANEL_CHANNEL_ID)
+            if ch:
+                await ch.send(f"🏆 Torneio finalizado! Campeão: <@{champion_id}> com {champ_score} pontos. Parabéns!")
+            owner = await safe_fetch_user(BOT_OWNER)
+            if owner:
+                try: await owner.send(f"🏆 Torneio finalizado! Campeão: <@{champion_id}> — {champ_score} pts.")
+                except: pass
+        save_json(RANKING_FILE, ranking)
+        save_json(TORNEIO_FILE, torneio_data)
+        await atualizar_painel()
+        try: await ctx.message.delete()
+        except: pass
+        return
+    torneio_data["round"] += 1
+    torneio_data["byes"] = []
+    await gerar_pairings_torneio()
+    save_json(TORNEIO_FILE, torneio_data)
+    await dm_pairings_round()
+    await ctx.send(f"➡️ Avançado para rodada {torneio_data['round']} — pairings enviados por DM.", delete_after=8)
+    await atualizar_painel()
+    try: await ctx.message.delete()
+    except: pass
+
+@bot.command(name="resetartorneio")
+async def cmd_reset_torneio(ctx):
+    if ctx.author.id != BOT_OWNER:
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Apenas o dono pode resetar o torneio.", delete_after=5)
+        return
+    torneio_data.update({
+        "active": False, "inscriptions_open": False, "players": [], "decklists": {},
+        "deck_confirmed": {}, "round": 0, "rounds_target": None, "pairings": {},
+        "results": {}, "scores": {}, "played": {}, "byes": [], "finished": False, "inscription_message_id": 0
+    })
+    save_json(TORNEIO_FILE, torneio_data)
+    await ctx.send("✅ Torneio resetado (sem registrar campeão).", delete_after=6)
+    await atualizar_painel()
+    try: await ctx.message.delete()
+    except: pass
 
 @bot.command(name="resetranking")
 async def cmd_reset_ranking(ctx, scope: str = "1x1"):
     if ctx.author.id != BOT_OWNER:
-        await ctx.send("❌ Apenas o dono pode resetar rankings.")
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Apenas o dono pode resetar rankings.", delete_after=5)
         return
     if scope.lower() in ("1x1", "fila", "1x"):
         ranking["scores_1x1"] = {}
         ranking["__last_reset"] = datetime.datetime.utcnow().isoformat()
         save_json(RANKING_FILE, ranking)
-        await ctx.send("🔄 Ranking 1x1 resetado manualmente.")
+        await ctx.send("🔄 Ranking 1x1 resetado manualmente.", delete_after=6)
     else:
-        await ctx.send("Uso: `!resetranking 1x1`")
+        await ctx.send("Uso: `!resetranking 1x1`", delete_after=6)
+    try: await ctx.message.delete()
+    except: pass
 
 @bot.command(name="torneiorankreset")
 async def cmd_reset_torneio_ranking(ctx):
     if ctx.author.id != BOT_OWNER:
-        await ctx.send("❌ Apenas o dono pode resetar ranking de torneio.")
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Apenas o dono pode resetar ranking de torneio.", delete_after=5)
         return
     ranking["scores_torneio"] = {}
     save_json(RANKING_FILE, ranking)
-    await ctx.send("🔄 Ranking de torneios resetado manualmente.")
-
-# ---------------- RANKING DM FLOW (also used by panel reaction) ----------------
-async def send_ranking_dm(uid: int):
-    user = await safe_fetch_user(uid)
-    if not user:
-        return
-    try:
-        s_1x1 = sorted(ranking.get("scores_1x1", {}).items(), key=lambda kv: kv[1], reverse=True)
-        lines = ["🏅 **Ranking 1x1** 🏅\n"]
-        for i, (u, pts) in enumerate(s_1x1[:20], 1):
-            lines.append(f"{i}. <@{u}> — {pts} vitórias")
-        if not s_1x1:
-            lines.append("Nenhuma partida registrada ainda.")
-        dm = await user.send("\n".join(lines))
-        ask_msg = await user.send("Deseja visualizar também o ranking de torneios? Reaja com ➡️ para sim ou ❌ para não.")
-        try:
-            await ask_msg.add_reaction(EMOJI_YES)
-            await ask_msg.add_reaction(EMOJI_NO)
-        except:
-            pass
-        def check(reaction, usr):
-            return usr.id == uid and reaction.message.id == ask_msg.id and str(reaction.emoji) in (EMOJI_YES, EMOJI_NO)
-        try:
-            reaction, usr = await bot.wait_for("reaction_add", check=check, timeout=60)
-            if str(reaction.emoji) == EMOJI_YES:
-                s_t = sorted(ranking.get("scores_torneio", {}).items(), key=lambda kv: kv[1], reverse=True)
-                lines2 = ["🏆 **Ranking de Torneios (campeões)** 🏆\n"]
-                for i, (u, wins) in enumerate(s_t[:20], 1):
-                    lines2.append(f"{i}. <@{u}> — {wins} campeonatos")
-                if not s_t:
-                    lines2.append("Nenhum campeão registrado ainda.")
-                await user.send("\n".join(lines2))
-            else:
-                await user.send("👍 Ok, não exibirei o ranking de torneios.")
-        except asyncio.TimeoutError:
-            await user.send("⌛ Tempo esgotado. Não será exibido ranking de torneios.")
-    except Exception as e:
-        print(Fore.RED + f"[RANK DM] erro: {e}")
-
-# ---------------- CANCELAR PARTIDA (no match_id) ----------------
-@bot.command(name="cancelarpartida")
-async def cmd_cancelar_partida(ctx):
-    uid = ctx.author.id
-    # find match
-    found_mid = None; found_part = None
-    for mid, p in partidas_ativas.items():
-        if uid in (p.get("player1"), p.get("player2")):
-            found_mid = mid; found_part = p; break
-    if not found_part:
-        for mid, p in torneio_data.get("pairings", {}).items():
-            if uid in (p.get("player1"), p.get("player2")):
-                found_mid = mid; found_part = p; break
-    if not found_part:
-        await ctx.send("❌ Você não está em nenhuma partida ativa.")
-        return
-    # ask initiator in channel to confirm
-    confirm_msg = await ctx.send(f"⚠️ Tem certeza que deseja solicitar cancelamento da sua partida atual? Reaja com {EMOJI_YES} para confirmar ou {EMOJI_NO} para cancelar.")
-    try:
-        await confirm_msg.add_reaction(EMOJI_YES)
-        await confirm_msg.add_reaction(EMOJI_NO)
-    except:
-        pass
-    def check_self(reaction, user):
-        return user.id == uid and reaction.message.id == confirm_msg.id and str(reaction.emoji) in (EMOJI_YES, EMOJI_NO)
-    try:
-        reaction, user = await bot.wait_for("reaction_add", check=check_self, timeout=30)
-        if str(reaction.emoji) == EMOJI_NO:
-            await ctx.send("✋ Pedido de cancelamento abortado.")
-            return
-    except asyncio.TimeoutError:
-        await ctx.send("⌛ Tempo esgotado. Pedido abortado.")
-        return
-    # DM opponent to confirm
-    partida = found_part
-    opponent = partida["player2"] if uid == partida["player1"] else partida["player1"]
-    partida.setdefault("cancel_attempts", {})[str(uid)] = True
-    op_user = await safe_fetch_user(opponent)
-    if not op_user:
-        await ctx.send("❌ Não foi possível contatar o adversário via DM.")
-        return
-    try:
-        dm = await op_user.send(f"⚠️ <@{uid}> solicitou cancelar a partida. Reaja com {EMOJI_YES} para confirmar cancelamento, ou {EMOJI_NO} para negar.")
-        try:
-            await dm.add_reaction(EMOJI_YES); await dm.add_reaction(EMOJI_NO)
-        except:
-            pass
-        poll_message_map[dm.id] = ("cancel_ack", (found_mid, uid))
-    except:
-        await ctx.send("❌ Falha ao enviar DM ao adversário.")
-        return
-    def check_op(reaction, user):
-        return user.id == opponent and reaction.message.id == dm.id and str(reaction.emoji) in (EMOJI_YES, EMOJI_NO)
-    try:
-        reaction, user = await bot.wait_for("reaction_add", check=check_op, timeout=60)
-        if str(reaction.emoji) == EMOJI_YES:
-            partidas_ativas.pop(found_mid, None)
-            if found_mid in torneio_data.get("pairings", {}):
-                torneio_data["pairings"].pop(found_mid, None)
-            save_json(TORNEIO_FILE, torneio_data)
-            await ctx.send("✅ Partida cancelada por acordo entre os jogadores.")
-            p1u = await safe_fetch_user(partida["player1"]); p2u = await safe_fetch_user(partida["player2"])
-            for u in (p1u, p2u):
-                if u:
-                    try: await u.send("✅ Partida cancelada por acordo entre os jogadores.")
-                    except: pass
-            await atualizar_painel()
-        else:
-            await ctx.send("❌ O adversário negou o cancelamento. Partida segue ativa.")
-    except asyncio.TimeoutError:
-        await ctx.send("⌛ Tempo esgotado aguardando resposta do adversário.")
-
-# ---------------- STAT, HELP, VER RANKING ----------------
-@bot.command(name="statustorneio")
-async def cmd_statustorneio(ctx):
-    if not torneio_data.get("active"):
-        await ctx.send("❌ Nenhum torneio ativo.")
-        return
-    txt = f"🏆 RODADA {torneio_data.get('round')}/{torneio_data.get('rounds_target')} 🏆\n\nConfrontos:\n"
-    for pid, p in torneio_data.get("pairings", {}).items():
-        txt += f"{pid}: <@{p['player1']}> vs <@{p['player2']}> — {p.get('result') or 'Pendente'}\n"
-    if torneio_data.get("byes"):
-        txt += "\nByes: " + ", ".join([f"<@{u}>" for u in torneio_data["byes"]]) + "\n"
-    await ctx.send(txt)
+    await ctx.send("🔄 Ranking de torneios resetado manualmente.", delete_after=6)
+    try: await ctx.message.delete()
+    except: pass
 
 @bot.command(name="verranking")
 async def cmd_verranking(ctx):
+    # send ranking via DM
     await send_ranking_dm(ctx.author.id)
+    try: await ctx.message.delete()
+    except: pass
 
 @bot.command(name="ajuda")
 async def cmd_ajuda(ctx):
@@ -1073,13 +1004,158 @@ async def cmd_ajuda(ctx):
         "• !resetranking 1x1 — reset manual ranking 1x1\n"
         "• !torneiorankreset — reset manual ranking torneio\n"
     )
-    await ctx.send(help_text)
+    await ctx.send(help_text, delete_after=15)
+    try: await ctx.message.delete()
+    except: pass
+
+# ---------------- RANKING DM FLOW ----------------
+async def send_ranking_dm(uid: int):
+    user = await safe_fetch_user(uid)
+    if not user:
+        return
+    try:
+        s_1x1 = sorted(ranking.get("scores_1x1", {}).items(), key=lambda kv: kv[1], reverse=True)
+        lines = ["🏅 **Ranking 1x1** 🏅\n"]
+        for i, (u, pts) in enumerate(s_1x1[:20], 1):
+            lines.append(f"{i}. <@{u}> — {pts} vitórias")
+        if not s_1x1:
+            lines.append("Nenhuma partida registrada ainda.")
+        dm = await user.send("\n".join(lines))
+        ask_msg = await user.send("Deseja visualizar também o ranking de torneios? Reaja com ➡️ para sim ou ❌ para não.")
+        await ask_msg.add_reaction(EMOJI_YES); await ask_msg.add_reaction(EMOJI_NO)
+        def check(reaction, usr):
+            return usr.id == uid and reaction.message.id == ask_msg.id and str(reaction.emoji) in (EMOJI_YES, EMOJI_NO)
+        try:
+            reaction, usr = await bot.wait_for("reaction_add", check=check, timeout=60)
+            if str(reaction.emoji) == EMOJI_YES:
+                s_t = sorted(ranking.get("scores_torneio", {}).items(), key=lambda kv: kv[1], reverse=True)
+                lines2 = ["🏆 **Ranking de Torneios (campeões)** 🏆\n"]
+                for i, (u, wins) in enumerate(s_t[:20], 1):
+                    lines2.append(f"{i}. <@{u}> — {wins} campeonatos")
+                if not s_t:
+                    lines2.append("Nenhum campeão registrado ainda.")
+                await user.send("\n".join(lines2))
+            else:
+                await user.send("👍 Ok, não exibirei o ranking de torneios.")
+        except asyncio.TimeoutError:
+            await user.send("⌛ Tempo esgotado. Não será exibido ranking de torneios.")
+    except Exception as e:
+        print(Fore.RED + f"[RANK DM] {e}")
+
+# ---------------- CANCELAR PARTIDA (sem match_id) ----------------
+@bot.command(name="cancelarpartida")
+async def cmd_cancelar_partida(ctx):
+    uid = ctx.author.id
+    found_mid = None; found_part = None
+    for mid, p in partidas_ativas.items():
+        if uid in (p.get("player1"), p.get("player2")):
+            found_mid = mid; found_part = p; break
+    if not found_part:
+        for mid, p in torneio_data.get("pairings", {}).items():
+            if uid in (p.get("player1"), p.get("player2")):
+                found_mid = mid; found_part = p; break
+    if not found_part:
+        await ctx.send("❌ Você não está em nenhuma partida ativa.", delete_after=6)
+        try: await ctx.message.delete()
+        except: pass
+        return
+    confirm_msg = await ctx.send(f"⚠️ Tem certeza que deseja solicitar cancelamento da sua partida atual? Reaja {EMOJI_YES} para confirmar ou {EMOJI_NO} para cancelar.")
+    try: await confirm_msg.add_reaction(EMOJI_YES); await confirm_msg.add_reaction(EMOJI_NO)
+    except: pass
+    def check_self(reaction, user): return user.id == uid and reaction.message.id == confirm_msg.id and str(reaction.emoji) in (EMOJI_YES, EMOJI_NO)
+    try:
+        reaction, user = await bot.wait_for("reaction_add", check=check_self, timeout=30)
+        if str(reaction.emoji) == EMOJI_NO:
+            await ctx.send("✋ Pedido de cancelamento abortado.", delete_after=6)
+            try: await ctx.message.delete()
+            except: pass
+            return
+    except asyncio.TimeoutError:
+        await ctx.send("⌛ Tempo esgotado. Pedido abortado.", delete_after=6)
+        try: await ctx.message.delete()
+        except: pass
+        return
+    partida = found_part
+    opponent = partida["player2"] if uid == partida["player1"] else partida["player1"]
+    partida.setdefault("cancel_attempts", {})[str(uid)] = True
+    op_user = await safe_fetch_user(opponent)
+    if not op_user:
+        await ctx.send("❌ Não foi possível contatar o adversário via DM.", delete_after=6)
+        try: await ctx.message.delete()
+        except: pass
+        return
+    try:
+        dm = await op_user.send(f"⚠️ <@{uid}> solicitou cancelar a partida. Reaja com {EMOJI_YES} para confirmar o cancelamento, ou {EMOJI_NO} para negar.")
+        await dm.add_reaction(EMOJI_YES); await dm.add_reaction(EMOJI_NO)
+        poll_message_map[dm.id] = ("cancel_ack", (found_mid, uid))
+    except:
+        await ctx.send("❌ Falha ao enviar DM ao adversário.", delete_after=6)
+        try: await ctx.message.delete()
+        except: pass
+        return
+    def check_op(reaction, user): return user.id == opponent and reaction.message.id == dm.id and str(reaction.emoji) in (EMOJI_YES, EMOJI_NO)
+    try:
+        reaction, user = await bot.wait_for("reaction_add", check=check_op, timeout=60)
+        if str(reaction.emoji) == EMOJI_YES:
+            partidas_ativas.pop(found_mid, None)
+            if found_mid in torneio_data.get("pairings", {}):
+                torneio_data["pairings"].pop(found_mid, None)
+            save_json(TORNEIO_FILE, torneio_data)
+            await ctx.send("✅ Partida cancelada por acordo entre os jogadores.", delete_after=6)
+            p1u = await safe_fetch_user(partida["player1"]); p2u = await safe_fetch_user(partida["player2"])
+            for u in (p1u, p2u):
+                if u:
+                    try: await u.send("✅ Partida cancelada por acordo entre os jogadores.")
+                    except: pass
+            await atualizar_painel()
+        else:
+            await ctx.send("❌ O adversário negou o cancelamento. Partida segue ativa.", delete_after=6)
+    except asyncio.TimeoutError:
+        await ctx.send("⌛ Tempo esgotado aguardando resposta do adversário.", delete_after=6)
+    try: await ctx.message.delete()
+    except: pass
+
+# ---------------- STAT / HELP ----------------
+@bot.command(name="statustorneio")
+async def cmd_statustorneio(ctx):
+    if not torneio_data.get("active"):
+        await ctx.send("❌ Nenhum torneio ativo.", delete_after=6)
+        try: await ctx.message.delete()
+        except: pass
+        return
+    txt = f"🏆 RODADA {torneio_data.get('round')}/{torneio_data.get('rounds_target')} 🏆\n\nConfrontos:\n"
+    for pid, p in torneio_data.get("pairings", {}).items():
+        txt += f"{pid}: <@{p['player1']}> vs <@{p['player2']}> — {p.get('result') or 'Pendente'}\n"
+    if torneio_data.get("byes"):
+        txt += "\nByes: " + ", ".join([f"<@{u}>" for u in torneio_data["byes"]]) + "\n"
+    await ctx.send(txt, delete_after=20)
+    try: await ctx.message.delete()
+    except: pass
 
 # ---------------- ON_READY ----------------
 @bot.event
 async def on_ready():
     await atualizar_painel()
     print(Fore.GREEN + f"[READY] {bot.user} (id: {bot.user.id})")
+
+# ---------------- AUTO-DELETE: apagar apenas a mensagem do usuário ao usar comando ----------------
+@bot.event
+async def on_command(ctx):
+    # don't delete in DM
+    try:
+        if isinstance(ctx.channel, discord.DMChannel):
+            return
+    except:
+        pass
+    try:
+        # small delay to let the command execute then delete
+        await asyncio.sleep(2)
+        await ctx.message.delete()
+    except:
+        pass
+
+# ---------------- ON_MESSAGE handled earlier, ensure commands processed ----------------
+# (already defined above)
 
 # ---------------- ENTRY POINT ----------------
 if __name__ == "__main__":
