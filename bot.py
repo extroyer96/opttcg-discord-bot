@@ -9,6 +9,9 @@
 import os
 import json
 import math
+import requests
+from discord import ui
+from discord.ui import View, Button
 import asyncio
 import datetime
 from pathlib import Path
@@ -242,6 +245,65 @@ async def atualizar_painel():
         print(Fore.RED + f"[PAINEL] erro: {e}")
 
 # ---------------- PERSIST / TASKS ----------------
+
+
+# ---------------- UI BUTTONS FOR PANEL ----------------
+class PanelView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(Button(label="Entrar 1x1", style=discord.ButtonStyle.success, custom_id="enter_1x1"))
+        self.add_item(Button(label="Sair 1x1", style=discord.ButtonStyle.danger, custom_id="leave_1x1"))
+        self.add_item(Button(label="Inscrever Torneio", style=discord.ButtonStyle.primary, custom_id="insc_torneio"))
+        self.add_item(Button(label="📊 Ranking", style=discord.ButtonStyle.secondary, custom_id="ver_ranking"))
+        self.add_item(Button(label="👁 Mostrar/Ocultar Inscritos", style=discord.ButtonStyle.secondary, custom_id="toggle_inscritos"))
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    try:
+        if interaction.data and interaction.data.get('custom_id'):
+            cid = interaction.data['custom_id']
+            user = interaction.user
+            if cid == "enter_1x1":
+                if user.id not in fila:
+                    fila.append(user.id)
+                    await interaction.response.send_message("✅ Você entrou na fila 1x1!", ephemeral=True)
+                    await atualizar_painel()
+                else:
+                    await interaction.response.send_message("⚠️ Você já está na fila.", ephemeral=True)
+            elif cid == "leave_1x1":
+                if user.id in fila:
+                    fila.remove(user.id)
+                    await interaction.response.send_message("❌ Você saiu da fila 1x1.", ephemeral=True)
+                    await atualizar_painel()
+                else:
+                    await interaction.response.send_message("⚠️ Você não está na fila.", ephemeral=True)
+            elif cid == "insc_torneio":
+                if not torneio_data.get("inscriptions_open"):
+                    await interaction.response.send_message("❌ Inscrições não estão abertas no momento.", ephemeral=True)
+                else:
+                    if user.id not in torneio_data.get("players", []):
+                        torneio_data.setdefault("players", []).append(user.id)
+                        save_json(TORNEIO_FILE, torneio_data)
+                        await interaction.response.send_message("✅ Você foi inscrito no torneio! Verifique sua DM para enviar decklist.", ephemeral=True)
+                        try:
+                            await user.send("📩 Você foi inscrito no torneio. Por favor, envie sua decklist aqui (cole o texto).")
+                        except:
+                            pass
+                        await atualizar_painel()
+                    else:
+                        await interaction.response.send_message("⚠️ Você já está inscrito.", ephemeral=True)
+            elif cid == "ver_ranking":
+                await interaction.response.send_message("📬 Enviando ranking por DM...", ephemeral=True)
+                await cmd_ver_ranking.callback(bot, user) if hasattr(cmd_ver_ranking, 'callback') else await cmd_ver_ranking(user)
+            elif cid == "toggle_inscritos":
+                global mostrar_inscritos
+                mostrar_inscritos = not mostrar_inscritos
+                await interaction.response.send_message(f"👁 Mostrar inscritos: {mostrar_inscritos}", ephemeral=True)
+                await atualizar_painel()
+    except Exception as e:
+        print("Interaction handler error:", e)
+
+# ---------------- END UI ----------------
 @tasks.loop(minutes=5)
 async def save_states():
     save_json(RANKING_FILE, ranking)
