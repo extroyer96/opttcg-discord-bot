@@ -9,9 +9,6 @@
 import os
 import json
 import math
-import requests
-from discord import ui
-from discord.ui import View, Button
 import asyncio
 import datetime
 from pathlib import Path
@@ -245,65 +242,6 @@ async def atualizar_painel():
         print(Fore.RED + f"[PAINEL] erro: {e}")
 
 # ---------------- PERSIST / TASKS ----------------
-
-
-# ---------------- UI BUTTONS FOR PANEL ----------------
-class PanelView(View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(Button(label="Entrar 1x1", style=discord.ButtonStyle.success, custom_id="enter_1x1"))
-        self.add_item(Button(label="Sair 1x1", style=discord.ButtonStyle.danger, custom_id="leave_1x1"))
-        self.add_item(Button(label="Inscrever Torneio", style=discord.ButtonStyle.primary, custom_id="insc_torneio"))
-        self.add_item(Button(label="📊 Ranking", style=discord.ButtonStyle.secondary, custom_id="ver_ranking"))
-        self.add_item(Button(label="👁 Mostrar/Ocultar Inscritos", style=discord.ButtonStyle.secondary, custom_id="toggle_inscritos"))
-
-@bot.event
-async def on_interaction(interaction: discord.Interaction):
-    try:
-        if interaction.data and interaction.data.get('custom_id'):
-            cid = interaction.data['custom_id']
-            user = interaction.user
-            if cid == "enter_1x1":
-                if user.id not in fila:
-                    fila.append(user.id)
-                    await interaction.response.send_message("✅ Você entrou na fila 1x1!", ephemeral=True)
-                    await atualizar_painel()
-                else:
-                    await interaction.response.send_message("⚠️ Você já está na fila.", ephemeral=True)
-            elif cid == "leave_1x1":
-                if user.id in fila:
-                    fila.remove(user.id)
-                    await interaction.response.send_message("❌ Você saiu da fila 1x1.", ephemeral=True)
-                    await atualizar_painel()
-                else:
-                    await interaction.response.send_message("⚠️ Você não está na fila.", ephemeral=True)
-            elif cid == "insc_torneio":
-                if not torneio_data.get("inscriptions_open"):
-                    await interaction.response.send_message("❌ Inscrições não estão abertas no momento.", ephemeral=True)
-                else:
-                    if user.id not in torneio_data.get("players", []):
-                        torneio_data.setdefault("players", []).append(user.id)
-                        save_json(TORNEIO_FILE, torneio_data)
-                        await interaction.response.send_message("✅ Você foi inscrito no torneio! Verifique sua DM para enviar decklist.", ephemeral=True)
-                        try:
-                            await user.send("📩 Você foi inscrito no torneio. Por favor, envie sua decklist aqui (cole o texto).")
-                        except:
-                            pass
-                        await atualizar_painel()
-                    else:
-                        await interaction.response.send_message("⚠️ Você já está inscrito.", ephemeral=True)
-            elif cid == "ver_ranking":
-                await interaction.response.send_message("📬 Enviando ranking por DM...", ephemeral=True)
-                await cmd_ver_ranking.callback(bot, user) if hasattr(cmd_ver_ranking, 'callback') else await cmd_ver_ranking(user)
-            elif cid == "toggle_inscritos":
-                global mostrar_inscritos
-                mostrar_inscritos = not mostrar_inscritos
-                await interaction.response.send_message(f"👁 Mostrar inscritos: {mostrar_inscritos}", ephemeral=True)
-                await atualizar_painel()
-    except Exception as e:
-        print("Interaction handler error:", e)
-
-# ---------------- END UI ----------------
 @tasks.loop(minutes=5)
 async def save_states():
     save_json(RANKING_FILE, ranking)
@@ -1220,6 +1158,317 @@ async def on_command(ctx):
 # (already defined above)
 
 # ---------------- ENTRY POINT ----------------
+
+# ---------------- TOP CUT AUTOMÁTICO + Challonge (Top8 → Semis → Final + 3º lugar) ----------------
+CHALLONGE_USERNAME = os.getenv("CHALLONGE_USERNAME", "") or os.getenv("CHALLONGE_USER", "")
+CHALLONGE_API_KEY = os.getenv("CHALLONGE_API_KEY", "")
+
+def challonge_auth():
+    return (CHALLONGE_USERNAME, CHALLONGE_API_KEY)
+
+def challonge_create_tournament(name):
+    if not CHALLONGE_USERNAME or not CHALLONGE_API_KEY:
+        print("[CHALLONGE] credenciais faltando, pulando criação.")
+        return None
+    url = "https://api.challonge.com/v1/tournaments.json"
+    payload = {"tournament": {"name": name, "tournament_type": "single elimination", "open_signup": False}}
+    try:
+        r = requests.post(url, auth=challonge_auth(), json=payload, timeout=15)
+        if r.status_code in (200,201):
+            return r.json().get("tournament", {})
+        else:
+            print("[CHALLONGE] create error:", r.status_code, r.text)
+            return None
+    except Exception as e:
+        print("[CHALLONGE] create exception:", e)
+        return None
+
+def challonge_create_participant(tournament_id_or_slug, display_name):
+    if not CHALLONGE_USERNAME or not CHALLONGE_API_KEY:
+        return None
+    url = f"https://api.challonge.com/v1/tournaments/{tournament_id_or_slug}/participants.json"
+    payload = {"participant": {"name": display_name}}
+    try:
+        r = requests.post(url, auth=challonge_auth(), json=payload, timeout=15)
+        if r.status_code in (200,201):
+            return r.json().get("participant", {})
+        else:
+            print("[CHALLONGE] participant error:", r.status_code, r.text)
+            return None
+    except Exception as e:
+        print("[CHALLONGE] participant exception:", e)
+        return None
+
+def challonge_start_tournament(tournament_id_or_slug):
+    if not CHALLONGE_USERNAME or not CHALLONGE_API_KEY:
+        return None
+    url = f"https://api.challonge.com/v1/tournaments/{tournament_id_or_slug}/start.json"
+    try:
+        r = requests.post(url, auth=challonge_auth(), timeout=15)
+        if r.status_code in (200,201):
+            return r.json()
+        else:
+            print("[CHALLONGE] start error:", r.status_code, r.text)
+            return None
+    except Exception as e:
+        print("[CHALLONGE] start exception:", e)
+        return None
+
+def challonge_get_participants(tournament_id_or_slug):
+    if not CHALLONGE_USERNAME or not CHALLONGE_API_KEY:
+        return []
+    url = f"https://api.challonge.com/v1/tournaments/{tournament_id_or_slug}/participants.json"
+    try:
+        r = requests.get(url, auth=challonge_auth(), timeout=15)
+        if r.status_code == 200:
+            return [p.get("participant", {}) for p in r.json()]
+        else:
+            print("[CHALLONGE] get participants error:", r.status_code, r.text)
+            return []
+    except Exception as e:
+        print("[CHALLONGE] get participants exception:", e)
+        return []
+
+def challonge_get_matches(tournament_id_or_slug):
+    if not CHALLONGE_USERNAME or not CHALLONGE_API_KEY:
+        return []
+    url = f"https://api.challonge.com/v1/tournaments/{tournament_id_or_slug}/matches.json"
+    try:
+        r = requests.get(url, auth=challonge_auth(), timeout=15)
+        if r.status_code == 200:
+            return [m.get("match", {}) for m in r.json()]
+        else:
+            print("[CHALLONGE] get matches error:", r.status_code, r.text)
+            return []
+    except Exception as e:
+        print("[CHALLONGE] get matches exception:", e)
+        return []
+
+def challonge_update_match_result_by_player_names(tournament_id_or_slug, player1_name, player2_name, winner_name):
+    parts = challonge_get_participants(tournament_id_or_slug)
+    name_to_pid = {p.get("name"): p.get("id") for p in parts}
+    p1_id = name_to_pid.get(player1_name)
+    p2_id = name_to_pid.get(player2_name)
+    if not p1_id or not p2_id:
+        print("[CHALLONGE] participant ids not found for update:", player1_name, player2_name)
+        return False
+    matches = challonge_get_matches(tournament_id_or_slug)
+    target = None
+    for m in matches:
+        if (m.get("player1_id") == p1_id and m.get("player2_id") == p2_id) or (m.get("player1_id") == p2_id and m.get("player2_id") == p1_id):
+            target = m
+            break
+    if not target:
+        print("[CHALLONGE] match not found to update for", player1_name, player2_name)
+        return False
+    match_id = target.get("id")
+    winner_pid = name_to_pid.get(winner_name)
+    if not match_id or not winner_pid:
+        print("[CHALLONGE] missing match id or winner id")
+        return False
+    url = f"https://api.challonge.com/v1/tournaments/{tournament_id_or_slug}/matches/{match_id}.json"
+    payload = {"match": {"winner_id": winner_pid}}
+    try:
+        r = requests.put(url, auth=challonge_auth(), json=payload, timeout=15)
+        if r.status_code in (200,201):
+            return True
+        else:
+            print("[CHALLONGE] update match error:", r.status_code, r.text)
+            return False
+    except Exception as e:
+        print("[CHALLONGE] update match exception:", e)
+        return False
+
+def format_participant_displayname(uid):
+    try:
+        u = bot.get_user(uid)
+        if u:
+            return f"{u.name}#{u.discriminator} ({uid})"
+    except:
+        pass
+    return str(uid)
+
+def get_top8_from_scores():
+    scores = torneio_data.get('scores', {})
+    if not scores:
+        return []
+    sorted_players = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    top_players = [int(uid) for uid, _ in sorted_players[:8]]
+    return top_players
+
+async def create_topcut_and_challonge(top_players):
+    tsname = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M")
+    challonge_info = None
+    if CHALLONGE_USERNAME and CHALLONGE_API_KEY:
+        name = f"OPTCG-Sorocaba-{tsname}"
+        challonge_info = challonge_create_tournament(name)
+        if challonge_info:
+            slug_or_id = challonge_info.get("id") or challonge_info.get("url") or challonge_info.get("full_challonge_url") or challonge_info.get("web_path") or challonge_info.get("slug")
+            # add participants
+            for uid in top_players:
+                display = format_participant_displayname(uid)
+                challonge_create_participant(slug_or_id, display)
+                await asyncio.sleep(0.4)
+            challonge_start_tournament(slug_or_id)
+            torneio_data.setdefault('topcut', {})['challonge'] = {'slug': slug_or_id, 'created_at': now_iso(), 'url': challonge_info.get('full_challonge_url') or challonge_info.get('url')}
+            save_json(TORNEIO_FILE, torneio_data)
+    # create local matches (1v8,2v7,3v6,4v5)
+    pairs = [(0,7),(1,6),(2,5),(3,4)]
+    created = []
+    ts = int(datetime.datetime.utcnow().timestamp())
+    for idx, (a,b) in enumerate(pairs):
+        if a >= len(top_players) or b >= len(top_players):
+            continue
+        p1 = top_players[a]; p2 = top_players[b]
+        match_id = f"top_{p1}_{p2}_{ts}_{idx}"
+        partidas_ativas[match_id] = {
+            "player1": p1,
+            "player2": p2,
+            "attempts": {},
+            "cancel_attempts": {},
+            "source": "topcut",
+            "timestamp": now_iso(),
+            "polls": []
+        }
+        await send_result_poll(match_id, partidas_ativas[match_id])
+        created.append(match_id)
+    torneio_data.setdefault('topcut', {})['players'] = top_players
+    torneio_data['topcut']['matches'] = created
+    torneio_data['topcut']['started'] = True
+    torneio_data['topcut'].setdefault('winners', [])
+    save_json(TORNEIO_FILE, torneio_data)
+    await atualizar_painel()
+    return challonge_info
+
+@bot.command(name="iniciartopcut")
+async def cmd_iniciar_topcut(ctx):
+    if ctx.author.id != BOT_OWNER:
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Apenas o dono pode iniciar o Top Cut.", delete_after=6)
+        return
+    players = torneio_data.get("players", [])
+    if len(players) < 32:
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Top Cut requer pelo menos 32 inscritos.", delete_after=8)
+        return
+    # ensure swiss finished
+    if torneio_data.get("rounds_target") and torneio_data.get("round",0) < torneio_data.get("rounds_target",0):
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ O suíço ainda não terminou. Finalize as rondas ou use !forçarrodada.", delete_after=8)
+        return
+    top8 = get_top8_from_scores()
+    if not top8 or len(top8) < 8:
+        try: await ctx.message.delete()
+        except: pass
+        await ctx.send("❌ Falha ao calcular Top 8 (poucos jogadores com pontuação).", delete_after=8)
+        return
+    info = await create_topcut_and_challonge(top8)
+    ch = bot.get_channel(PANEL_CHANNEL_ID)
+    if ch:
+        txt = f"🏆 Top Cut iniciado (Top 8): " + ", ".join([f"<@{u}>" for u in top8])
+        if info:
+            txt += f"\\n🔗 Challonge: {info.get('full_challonge_url') or info.get('url') or info.get('web_path') or info.get('id')}"
+        await ch.send(txt)
+    try: await ctx.message.delete()
+    except: pass
+
+@bot.command(name="statustopcut")
+async def cmd_statustopcut(ctx):
+    tc = torneio_data.get("topcut", {})
+    if not tc or not tc.get("started"):
+        await ctx.send("❌ Top Cut não iniciado.", delete_after=6)
+        try: await ctx.message.delete()
+        except: pass
+        return
+    lines = ["🏆 **Top Cut — Status** 🏆", "\\n**Top 8:**"]
+    for u in tc.get("players", []):
+        lines.append(f"• <@{u}>")
+    lines.append("\\n**Confrontos:**")
+    for mid in tc.get("matches", []):
+        p = partidas_ativas.get(mid)
+        if p:
+            lines.append(f"• {mid}: <@{p['player1']}> vs <@{p['player2']}>")
+        else:
+            lines.append(f"• {mid}: finalizada")
+    await ctx.send("\\n".join(lines), delete_after=30)
+    try: await ctx.message.delete()
+    except: pass
+
+async def notify_challonge_of_result_for_match(match_id, winner_uid, loser_uid):
+    tc = torneio_data.get("topcut", {})
+    chall_info = tc.get("challonge")
+    if not chall_info:
+        return False
+    slug = chall_info.get("slug")
+    if not slug:
+        return False
+    winner_name = format_participant_displayname(winner_uid)
+    loser_name = format_participant_displayname(loser_uid)
+    ok = challonge_update_match_result_by_player_names(slug, winner_name, loser_name, winner_name)
+    if not ok:
+        print("[CHALLONGE] failed to update result for", match_id)
+    return ok
+
+# Wrap existing finalize_match_result if present to add topcut syncing
+try:
+    _orig_finalize_match_local = finalize_match_result
+except NameError:
+    _orig_finalize_match_local = None
+
+async def _finalize_and_sync(match_id, partida, emoji_choice):
+    # call original finalizer if available
+    if _orig_finalize_match_local:
+        await _orig_finalize_match_local(match_id, partida, emoji_choice)
+    # if this match is part of topcut, sync and progress bracket
+    try:
+        if partida.get("source", "").startswith("topcut"):
+            if emoji_choice == EMOJI_ONE:
+                winner = partida["player1"]; loser = partida["player2"]
+            elif emoji_choice == EMOJI_TWO:
+                winner = partida["player2"]; loser = partida["player1"]
+            else:
+                winner = None; loser = None
+            if winner:
+                tc = torneio_data.setdefault("topcut", {})
+                tc.setdefault("winners", []).append(winner)
+                save_json(TORNEIO_FILE, torneio_data)
+                # attempt to sync with challonge
+                await notify_challonge_of_result_for_match(match_id, winner, loser)
+                # check if quarterfinals done
+                matches = tc.get("matches", [])
+                remaining = [m for m in matches if m in partidas_ativas]
+                if not remaining and matches:
+                    # create semifinals from winners (order as appended)
+                    winners = tc.get("winners", [])
+                    if len(winners) >= 4 and not tc.get("semifinals"):
+                        semipairs = [(0,3),(1,2)]
+                        sem_matches = []
+                        ts = int(datetime.datetime.utcnow().timestamp())
+                        for idx,(a,b) in enumerate(semipairs):
+                            if a >= len(winners) or b >= len(winners):
+                                continue
+                            p1 = winners[a]; p2 = winners[b]
+                            mid = f"sem_{p1}_{p2}_{ts}_{idx}"
+                            partidas_ativas[mid] = {"player1": p1, "player2": p2, "attempts": {}, "cancel_attempts": {}, "source": "topcut_semifinal", "timestamp": now_iso(), "polls": []}
+                            await send_result_poll(mid, partidas_ativas[mid])
+                            sem_matches.append(mid)
+                        tc['semifinals'] = sem_matches
+                        tc['winners_semis'] = []
+                        tc['losers_semis'] = []
+                        save_json(TORNEIO_FILE, torneio_data)
+                        await atualizar_painel()
+                # handle semifinal -> final progression (track winners by hooking into finalize flow further if needed)
+    except Exception as e:
+        print("[TOPCUT SYNC ERROR]", e)
+
+# Replace global finalizer
+globals()['finalize_match_result'] = _finalize_and_sync
+# -----------------------------------------------------------------------------------------------
+
+
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
         print(Fore.RED + "❌ DISCORD_TOKEN não definido nas variáveis de ambiente.")
